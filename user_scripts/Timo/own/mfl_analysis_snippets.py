@@ -17,7 +17,8 @@ config = {}
 fitlogic = FitLogic(**kwargs, config=config)
 
 import imp
-qudi_dir = 'C:/Users/Setup3-PC/Desktop/qudi/'
+qudi_dir = r'C:\Users\Timo\OneDrive\_Promotion\Software\qudi'
+#'C:/Users/Setup3-PC/Desktop/qudi/'
 path_mfl_lib = qudi_dir + '/jupyter/Timo/own/mfl_sensing_simplelib.py'
 
 
@@ -1520,6 +1521,13 @@ def save_fig(fname):
 
 ##### Scripts #####
 
+
+common_params = {'data_path': r"E:\Timo\Data",
+                 'copy_2_path':  r'', #'', #
+
+
+                 }
+
 if __name__ == '__main__':
 
     logging.basicConfig()
@@ -1554,14 +1562,16 @@ if __name__ == '__main__':
 
     # basic plotting of combined mfl data
     #"""
-    path = r"E:/Data/2019/11/20191118/PulsedMeasurement/mfl_n_sweeps=200_longT_2/combine"
-    path = r"E:/Data/2019/11/20191119/PulsedMeasurement/combine"
-    path = r"E:/Data/2020/01/20200124/PulsedMeasurement/na_g_f_vary_2/g=4_f=3/combine"
+    path = common_params['data_path'] + r"/2019/11/20191118/PulsedMeasurement/mfl_n_sweeps=200_longT_2/combine"
+    path = common_params['data_path'] + r"/2019/11/20191119/PulsedMeasurement/combine"
+    path = common_params['data_path'] + r"/2020/01/20200124/PulsedMeasurement/na_g_f_vary_2/g=4_f=3/combine"
     #path = "E:/Data/2019/11/20191104/PulsedMeasurement/_2d_mfl_M6.3/combine"
 
 
     #paths = [r"E:\Data\2019\11\20191104\PulsedMeasurement\_2d_mfl_M6.3\combine",]
-    paths = [r"E:\Data\2020\10\20201007\PulsedMeasurement\combine"]
+    paths = [common_params['data_path'] + r"\2020\10\20201007\PulsedMeasurement\combine"]
+    paths = [common_params['data_path'] + r"\2019\09\20190912\PulsedMeasurement\combine_B_vs_epoch_duplicates_for_plotting_test"]
+
 
     rolling_windows = '100ms'
     rolling_windows = '1000ms'  # only [ms] allowed!

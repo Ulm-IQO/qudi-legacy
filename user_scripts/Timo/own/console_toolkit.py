@@ -8,6 +8,7 @@ import ast
 import difflib
 
 qudi_path = "C:/Users/Setup3-PC/Desktop/qudi"
+qudi_path = r"C:\Users\Timo\OneDrive\_Promotion\Software\qudi"
 os.chdir(qudi_path)
 
 from core.util.helpers import csv_2_list

@@ -12,7 +12,6 @@ from logic.pulsed.pulse_objects import PulseCompositeType as Comp
 from core.util.helpers import csv_2_list
 from user_scripts.Timo.own.console_toolkit import Tk_file, Tk_string
 
-
 class DQTAltModes(IntEnum):
     DQT_12_alternating = 1
     DQT_both = 2

@@ -183,8 +183,11 @@ class Tk_file():
                     el_manual = Tk_string.str_2_dict(entry)
 
                     # interprete ";" in string as list of strings
-                    str_lists = csv_2_list(el_manual[1], str_2_val=str, delimiter=';')  # to list of csv strings
-                    val_enum = [csv_2_list(el, str_2_val=Tk_string.str_2_enum) for el in str_lists]
+                    if ";" in el_manual[1]:
+                        str_lists = csv_2_list(el_manual[1], str_2_val=str, delimiter=';')  # to list of csv strings
+                        val_enum = [csv_2_list(el, str_2_val=Tk_string.str_2_enum) for el in str_lists]
+                    else:
+                        val_enum = Tk_string.str_2_enum(el_manual[1])
 
                     val = el_manual[1] if val_enum is None else val_enum
 
@@ -412,6 +415,7 @@ class Tk_string():
             val_str = dict_str.split(":", 1)[1][:]
 
             key_str = key_str.replace("'", "")
+            key_str = key_str.replace("\"", "")
             val_str = val_str.replace("'", "")
 
             return key_str, val_str
@@ -550,6 +554,9 @@ if __name__ == '__main__':
     # mes.get_total_times()
     # mes.calc_sensitivity()
 
+    fname = r'E:\Timo\Data\2022\05\20220512\PulsedMeasurement\tomo_test_noCNOT_reference_init=0-i,0_11\20220513-0820-44_tomography_on1_rot=none_phi=0_init_none_pulsed_measurement.dat'
+    Tk_file.load_pulsed_result(fname)
+
     fname = r"E:\\Data\\2022\\04\\20220414\\PulsedMeasurement\\dummy_tomography_tests\\single_qubit\\20220414-1356-06_tomography_parameters.dat"
     mes = Tk_file.load_param_file(fname)
 
@@ -567,3 +574,5 @@ if __name__ == '__main__':
         # p_i = Tk_file.load_pulsed_result(f)
         p_i = Tk_file.load_pulsed_result(f)
         p_raw.append(p_i)
+
+

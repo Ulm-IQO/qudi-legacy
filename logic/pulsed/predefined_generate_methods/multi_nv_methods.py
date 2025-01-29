@@ -2178,7 +2178,7 @@ class MultiNV_Generator(PredefinedGeneratorBase):
                              add_gate_ch='d_ch4', env_type_1=Evm.from_gen_settings,
                              env_type_2=Evm.from_gen_settings,
                              scale_tau2_first=1, scale_tau2_last=1, floating_last_pi=True,  # will allow only negative tau2!
-                             alternating=True, no_laser=False, incl_ref=False, ref_pix_alt=[None, None]):
+                             alternating=True, no_laser=False, incl_ref=False, ref_pix_alt="None, None"):
         """
         Decoupling sequence on both NVs.
         Tau1 is kept constant and the second pi pulse is swept through.
@@ -2281,6 +2281,7 @@ class MultiNV_Generator(PredefinedGeneratorBase):
                        f"envelope= {env_type_1}/{env_type_2}, read pulse phase {read_phase_deg},"
                        f"init=({init_pix_on_1, init_pix_on_2}), start={start_pix_on_1}, end={(end_pix_on_1, end_pix_on_2)}")
 
+        ref_pix_alt = csv_2_list(ref_pix_alt)
         if ref_pix_alt == [None, None]:
             ref_pix_alt = [0, 1]
 
@@ -3611,6 +3612,8 @@ class MultiNV_Generator(PredefinedGeneratorBase):
         created_ensembles, created_sequences = [], []
         created_ensembles.append(block_ensemble)
         return created_blocks, created_ensembles, created_sequences
+
+
 
 
 
@@ -5845,6 +5848,3175 @@ class MultiNV_Generator(PredefinedGeneratorBase):
         # append ensemble to created ensembles
         created_ensembles.append(block_ensemble)
         return created_blocks, created_ensembles, created_sequences
+
+
+    def generate_p1pol_rabi_sweep(self, name='p1pol_rabi_sweep', coupling = 500e3,
+                                  p1_freq=2870.0e6, p1_pfactor=1, p1_rabi_period=1e-6,
+                                  nv_freq=1290.0e6, nv_pfactor=1, nv_rabi_period=1e-6,
+                                  pfactor_center = 1, num_of_steps=50, pfactor_step_size=0.01,
+                                  alternating=False, end_laser = False,
+                                  skip_p1_pi2s=False, skip_p1_pi=False, read_phase_degree='0, 180'):
+
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+
+        pfac_array = (pfactor_center - np.floor(num_of_steps / 2) * pfactor_step_size) \
+                      + np.arange(num_of_steps) * pfactor_step_size
+
+        if pfactor_center - np.floor(num_of_steps / 2)*pfactor_step_size < 0:
+            self.lock.warning("Some power factors are negative! Check stepsize and center value!")
+            pfac_array = pfac_array[pfac_array > 0]
+            self.lock.warning("Negative pfactors have been eliminated!")
+
+        read_phases = np.fromstring(read_phase_degree, sep=",")
+
+        # create the elements
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        # Create block and append to created_blocks list
+        p1pol_block = PulseBlock(name=name)
+
+        # NV pulses
+        pihalf_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                              increment=0,
+                                              amp=self.microwave_amplitude / nv_pfactor,
+                                              freq=nv_freq,
+                                              phase=0)
+        pihalf_read_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                                   increment=0,
+                                                   amp=self.microwave_amplitude / nv_pfactor,
+                                                   freq=nv_freq,
+                                                   phase=read_phases[0])
+        pi3half_read_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                                    increment=0,
+                                                    amp=self.microwave_amplitude / nv_pfactor,
+                                                    freq=nv_freq,
+                                                    phase=read_phases[1])
+
+        # P1 pulses
+        p1_pihalf_element = self._get_mw_element(length=p1_rabi_period / 4 if not skip_p1_pi2s else 0,
+                                                 increment=0,
+                                                 amp=self.microwave_amplitude / p1_pfactor,
+                                                 freq=p1_freq,
+                                                 phase=0)
+
+        # append to full block
+        for idx, varying_pfac in enumerate(pfac_array):
+            p1pol_block.append(p1_pihalf_element)
+            p1pol_block.append(pihalf_element)
+
+            double_pi_element = self._get_multiple_mw_element(length= 1/(2*coupling),
+                                                              increment=0,
+                                                              amps=[self.microwave_amplitude / varying_pfac,
+                                                                    self.microwave_amplitude / p1_pfactor],
+                                                              freqs=[nv_freq,
+                                                                     p1_freq],
+                                                              phases=[90, 90])
+            #spin lock trials
+            if skip_p1_pi:
+                double_pi_element = self._get_mw_element(length=1 / (2 * coupling),
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / varying_pfac,
+                                                         freq=nv_freq,
+                                                         phase=90)
+
+            p1pol_block.append(double_pi_element)
+            p1pol_block.append(pihalf_read_element)
+            p1pol_block.append(p1_pihalf_element)
+
+            if end_laser:
+                p1pol_block.append(laser_element)
+                p1pol_block.append(delay_element)
+                p1pol_block.append(waiting_element)
+
+            if alternating:
+                p1pol_block.append(p1_pihalf_element)
+                p1pol_block.append(pihalf_element)
+
+                p1pol_block.append(double_pi_element)
+                p1pol_block.append(pi3half_read_element)
+                p1pol_block.append(p1_pihalf_element)
+
+                if end_laser:
+                    p1pol_block.append(laser_element)
+                    p1pol_block.append(delay_element)
+                    p1pol_block.append(waiting_element)
+
+        created_blocks.append(p1pol_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((p1pol_block.name, 0))
+
+        # Create and append sync trigger block if needed
+        if end_laser:
+            self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = list()
+        block_ensemble.measurement_information['controlled_variable'] = pfac_array
+        block_ensemble.measurement_information['labels'] = ('p_factor', '')
+        block_ensemble.measurement_information['units'] = ('', '')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        # append ensemble to created ensembles
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+    def generate_p1pol_coupling_sweep(self, name='p1pol_coupling_sweep', doublepi_pfactor = 1,
+                                  p1_freq=2870.0e6, p1_pfactor=1, p1_rabi_period=1e-6,
+                                  nv_freq=1290.0e6, nv_pfactor=1, nv_rabi_period=1e-6,
+                                  coupling_center_freq=500e3, num_of_steps = 50, step_size = 5e3,
+                                  alternating=False, end_laser = True,
+                                  skip_p1_pi2s=False, skip_p1_pi=False, read_phase_degree='0, 180'):
+
+        created_blocks = list()
+        created_ensembles = list()
+        
+        created_sequences = list()
+
+        coupling_array = (coupling_center_freq - np.floor(num_of_steps / 2) * step_size) \
+                      + np.arange(num_of_steps) * step_size
+
+        read_phases = np.fromstring(read_phase_degree, sep=",")
+
+        # create the elements
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        # Create block and append to created_blocks list
+        p1pol_block = PulseBlock(name=name)
+
+        # NV pulses
+        pihalf_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                              increment=0,
+                                              amp=self.microwave_amplitude / nv_pfactor,
+                                              freq=nv_freq,
+                                              phase=0)
+        pihalf_read_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                                   increment=0,
+                                                   amp=self.microwave_amplitude / nv_pfactor,
+                                                   freq=nv_freq,
+                                                   phase=read_phases[0])
+        pi3half_read_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                                    increment=0,
+                                                    amp=self.microwave_amplitude / nv_pfactor,
+                                                    freq=nv_freq,
+                                                    phase=read_phases[1])
+
+        # P1 pulses
+        p1_pihalf_element = self._get_mw_element(length=p1_rabi_period / 4 if not skip_p1_pi2s else 0,
+                                                 increment=0,
+                                                 amp=self.microwave_amplitude / p1_pfactor,
+                                                 freq=p1_freq,
+                                                 phase=0)
+
+        # append to full block
+        for idx, A_zz in enumerate(coupling_array):
+            p1pol_block.append(p1_pihalf_element)
+            p1pol_block.append(pihalf_element)
+
+            double_pi_element = self._get_multiple_mw_element(length= 1/(2*A_zz),
+                                                              increment=0,
+                                                              amps=[self.microwave_amplitude / doublepi_pfactor,
+                                                                    self.microwave_amplitude / p1_pfactor],
+                                                              freqs=[nv_freq,
+                                                                     p1_freq],
+                                                              phases=[90, 90])
+            #spin lock trials
+            if skip_p1_pi:
+                double_pi_element = self._get_mw_element(length=1/(2*A_zz),
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / doublepi_pfactor,
+                                                         freq=nv_freq,
+                                                         phase=90)
+
+            p1pol_block.append(double_pi_element)
+            p1pol_block.append(pihalf_read_element)
+            p1pol_block.append(p1_pihalf_element)
+
+            if end_laser:
+                p1pol_block.append(laser_element)
+                p1pol_block.append(delay_element)
+                p1pol_block.append(waiting_element)
+
+            if alternating:
+                p1pol_block.append(p1_pihalf_element)
+                p1pol_block.append(pihalf_element)
+
+                p1pol_block.append(double_pi_element)
+
+                p1pol_block.append(pi3half_read_element)
+                p1pol_block.append(p1_pihalf_element)
+                if end_laser:
+                    p1pol_block.append(laser_element)
+                    p1pol_block.append(delay_element)
+                    p1pol_block.append(waiting_element)
+
+        created_blocks.append(p1pol_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((p1pol_block.name, 0))
+
+        # Create and append sync trigger block if needed
+        if end_laser:
+            self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = list()
+        block_ensemble.measurement_information['controlled_variable'] = coupling_array
+        block_ensemble.measurement_information['labels'] = ('A_zz', '')
+        block_ensemble.measurement_information['units'] = ('Hz', '')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        # append ensemble to created ensembles
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+    def generate_p1pol_coupling_sweep_time(self, name='p1pol_coupling_sweep_time', doublepi_pfactor = 1,
+                                  p1_freq=2870.0e6, p1_pfactor=1, p1_rabi_period=1e-6,
+                                  nv_freq=1290.0e6, nv_pfactor=1, nv_rabi_period=1e-6,
+                                  tau_spinlock_start=0.5e-6, num_of_steps = 50, step_size = 0.02e-6,
+                                  alternating=False, end_laser = True,
+                                  skip_p1_pi2s=False, skip_p1_pi=False, read_phase_degree='0, 180'):
+
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+
+        coupling_array = tau_spinlock_start + np.arange(num_of_steps) * step_size
+
+        read_phases = np.fromstring(read_phase_degree, sep=",")
+
+        # create the elements
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        # Create block and append to created_blocks list
+        p1pol_block = PulseBlock(name=name)
+
+        # NV pulses
+        pihalf_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                              increment=0,
+                                              amp=self.microwave_amplitude / nv_pfactor,
+                                              freq=nv_freq,
+                                              phase=0)
+        pihalf_read_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                                   increment=0,
+                                                   amp=self.microwave_amplitude / nv_pfactor,
+                                                   freq=nv_freq,
+                                                   phase=read_phases[0])
+        pi3half_read_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                                    increment=0,
+                                                    amp=self.microwave_amplitude / nv_pfactor,
+                                                    freq=nv_freq,
+                                                    phase=read_phases[1])
+
+        # P1 pulses
+        p1_pihalf_element = self._get_mw_element(length=p1_rabi_period / 4 if not skip_p1_pi2s else 0,
+                                                 increment=0,
+                                                 amp=self.microwave_amplitude / p1_pfactor,
+                                                 freq=p1_freq,
+                                                 phase=0)
+
+        # append to full block
+        for idx, tau in enumerate(coupling_array):
+            p1pol_block.append(p1_pihalf_element)
+            p1pol_block.append(pihalf_element)
+
+            double_pi_element = self._get_multiple_mw_element(length= tau,
+                                                              increment=0,
+                                                              amps=[self.microwave_amplitude / doublepi_pfactor,
+                                                                    self.microwave_amplitude / p1_pfactor],
+                                                              freqs=[nv_freq,
+                                                                     p1_freq],
+                                                              phases=[90, 90])
+            #spin lock trials
+            if skip_p1_pi:
+                double_pi_element = self._get_mw_element(length=tau,
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / doublepi_pfactor,
+                                                         freq=nv_freq,
+                                                         phase=90)
+
+            p1pol_block.append(double_pi_element)
+
+            p1pol_block.append(pihalf_read_element)
+            p1pol_block.append(p1_pihalf_element)
+            if end_laser:
+                p1pol_block.append(laser_element)
+                p1pol_block.append(delay_element)
+                p1pol_block.append(waiting_element)
+
+            if alternating:
+                p1pol_block.append(p1_pihalf_element)
+                p1pol_block.append(pihalf_element)
+
+                p1pol_block.append(double_pi_element)
+
+                p1pol_block.append(pi3half_read_element)
+                p1pol_block.append(p1_pihalf_element)
+                if end_laser:
+                    p1pol_block.append(laser_element)
+                    p1pol_block.append(delay_element)
+                    p1pol_block.append(waiting_element)
+
+        created_blocks.append(p1pol_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((p1pol_block.name, 0))
+
+        # Create and append sync trigger block if needed
+        if end_laser:
+            self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = list()
+        block_ensemble.measurement_information['controlled_variable'] = coupling_array
+        block_ensemble.measurement_information['labels'] = ('tau spinlock', '')
+        block_ensemble.measurement_information['units'] = ('s', '')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        # append ensemble to created ensembles
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+    def _get_generation_method(self, method_name):
+        # evil access to all loaded generation methods. Use carefully.
+        return self._PredefinedGeneratorBase__sequencegeneratorlogic.generate_methods[method_name]
+
+    def generate_p1pol_ramsey(self, name='p1pol_ramsey', doublepi_pfactor = 1, tau_spinlock = 1e-6,
+                                  p1_freq=2870.0e6, p1_pfactor=1, p1_rabi_period=1e-6,
+                                  nv_freq=1290.0e6, nv_pfactor=1, nv_rabi_period=1e-6,
+                                  tau_ramsey_start=1e-6, num_of_steps = 50, step_size = 0.1e-6,
+                                  ramsey_offset = 0, repol_laser_length = 3e-6,
+                                  alternating=False,
+                                  add_pi_flip = False, turnoff_pol=False,
+                                  skip_p1_pi2s=False, skip_p1_pi=False):
+        """
+        P1 polarization sequence followed by a ramsey
+        """
+
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+
+        # create the elements
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        repol_laser_element = self._get_laser_gate_element(length=repol_laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        tau_ramsey_array = tau_ramsey_start + np.arange(num_of_steps) * step_size
+
+        if not turnoff_pol:
+            idx_ignored_lasers = list(range(0, (4 if alternating else 2)* num_of_steps, 2))
+        else:
+            idx_ignored_lasers = []
+
+        #create blocks
+        mega_block = PulseBlock(name=name)
+
+        if not turnoff_pol:
+            p1pol_element, _ , _ = self.generate_p1pol_coupling_sweep_time(doublepi_pfactor = doublepi_pfactor,
+                                  p1_freq=p1_freq, p1_pfactor=p1_pfactor, p1_rabi_period=p1_rabi_period,
+                                  nv_freq=nv_freq, nv_pfactor=nv_pfactor, nv_rabi_period=nv_rabi_period,
+                                  tau_spinlock_start=tau_spinlock, num_of_steps = 1, step_size = 0,
+                                  alternating=False, end_laser = False,
+                                  skip_p1_pi2s=skip_p1_pi2s, skip_p1_pi=skip_p1_pi,
+                                  read_phase_degree='0, 0')
+            p1pol_element = p1pol_element[0]
+            mega_block.extend(p1pol_element)
+
+            mega_block.append(repol_laser_element)
+            mega_block.append(delay_element)
+            mega_block.append(waiting_element)
+
+        if add_pi_flip:
+            p1_pi_element = self._get_mw_element(length=p1_rabi_period / 2,
+                                                 increment=0,
+                                                 amp=self.microwave_amplitude / p1_pfactor,
+                                                 freq=p1_freq,
+                                                 phase=0)
+            mega_block.append(p1_pi_element)
+
+
+        ramsey_meas = self._get_generation_method('ramsey')
+        ramsey_element, _, _ =  ramsey_meas(tau_start=tau_ramsey_start,
+                                            tau_step=step_size,
+                                            num_of_points=1,
+                                            offset = ramsey_offset,
+                                            alternating=False,
+                                            read_phase_degree='0, 0')
+        ramsey_element = ramsey_element[0]
+        mega_block.extend(ramsey_element)
+
+        if alternating:
+            if not turnoff_pol:
+                p1pol_element, _, _ = self.generate_p1pol_coupling_sweep_time(doublepi_pfactor=doublepi_pfactor,
+                                      p1_freq=p1_freq, p1_pfactor=p1_pfactor, p1_rabi_period=p1_rabi_period,
+                                      nv_freq=nv_freq, nv_pfactor=nv_pfactor, nv_rabi_period=nv_rabi_period,
+                                      tau_spinlock_start=tau_spinlock, num_of_steps=1, step_size=0,
+                                      alternating=False, end_laser=False,
+                                      skip_p1_pi2s=skip_p1_pi2s, skip_p1_pi=skip_p1_pi,
+                                      read_phase_degree='0, 0')
+                p1pol_element = p1pol_element[0]
+                mega_block.extend(p1pol_element)
+
+                mega_block.append(repol_laser_element)
+                mega_block.append(delay_element)
+                mega_block.append(waiting_element)
+
+            if add_pi_flip:
+                p1_pi_element = self._get_mw_element(length=p1_rabi_period / 2,
+                                                     increment=0,
+                                                     amp=self.microwave_amplitude / p1_pfactor,
+                                                     freq=p1_freq,
+                                                     phase=0)
+                mega_block.append(p1_pi_element)
+
+            ramsey_meas = self._get_generation_method('ramsey')
+            ramsey_element, _, _ = ramsey_meas(tau_start=tau_ramsey_start,
+                                               tau_step=step_size,
+                                               num_of_points=1,
+                                               offset=ramsey_offset,
+                                               alternating=False,
+                                               read_phase_degree='180, 180')
+            ramsey_element = ramsey_element[0]
+            mega_block.extend(ramsey_element)
+
+
+        created_blocks.append(mega_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((mega_block.name, num_of_steps - 1))
+
+        # Create and append sync trigger block if needed
+        self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+        number_of_lasers += len(idx_ignored_lasers)
+        self.log.debug(f"Ignoring laser pulses with idx= {idx_ignored_lasers}. Laser num= {number_of_lasers}")
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = idx_ignored_lasers
+        block_ensemble.measurement_information['controlled_variable'] = tau_ramsey_array
+        block_ensemble.measurement_information['labels'] = ('tau', '')
+        block_ensemble.measurement_information['units'] = ('s', '')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+
+    def generate_p1pol_rabi_sweep_multidrive(self, name='p1pol_rabi_multidrive', coupling = 500e3,
+                                  p1_freq_left=2870.0e6, p1_pfactor_left=1, p1_rabi_period_left=1e-6,
+                                  p1_freq_center=2870.0e6, p1_pfactor_center=1, p1_rabi_period_center=1e-6,
+                                  p1_freq_right=2870.0e6, p1_pfactor_right=1, p1_rabi_period_right=1e-6,
+                                  nv_freq=1290.0e6, nv_pfactor=1, nv_rabi_period=1e-6,
+                                  pfactor_center = 1, num_of_steps=50, pfactor_step_size=0.01,
+                                  alternating=False, end_laser = False,
+                                  skip_p1_pi2s=False, skip_p1_pi=False, read_phase_degree='0, 180'):
+
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+
+        pfac_array = (pfactor_center - np.floor(num_of_steps / 2) * pfactor_step_size) \
+                      + np.arange(num_of_steps) * pfactor_step_size
+
+        if pfactor_center - np.floor(num_of_steps / 2)*pfactor_step_size < 0:
+            self.lock.warning("Some power factors are negative! Check stepsize and center value!")
+            pfac_array = pfac_array[pfac_array > 0]
+            self.lock.warning("Negative pfactors have been eliminated!")
+
+        read_phases = np.fromstring(read_phase_degree, sep=",")
+
+        # create the elements
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        # Create block and append to created_blocks list
+        p1pol_block = PulseBlock(name=name)
+
+        # NV pulses
+        pihalf_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                              increment=0,
+                                              amp=self.microwave_amplitude / nv_pfactor,
+                                              freq=nv_freq,
+                                              phase=0)
+        pihalf_read_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                                   increment=0,
+                                                   amp=self.microwave_amplitude / nv_pfactor,
+                                                   freq=nv_freq,
+                                                   phase=read_phases[0])
+        pi3half_read_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                                    increment=0,
+                                                    amp=self.microwave_amplitude / nv_pfactor,
+                                                    freq=nv_freq,
+                                                    phase=read_phases[1])
+
+        # P1 pulses
+        p1_left_pihalf_element = self._get_mw_element(length=p1_rabi_period_left / 4 if not skip_p1_pi2s else 0,
+                                                      increment=0,
+                                                      amp=self.microwave_amplitude / p1_pfactor_left,
+                                                      freq=p1_freq_left,
+                                                      phase=0)
+        p1_center_pihalf_element = self._get_mw_element(length=p1_rabi_period_center / 4 if not skip_p1_pi2s else 0,
+                                                        increment=0,
+                                                        amp=self.microwave_amplitude / p1_pfactor_center,
+                                                        freq=p1_freq_center,
+                                                        phase=0)
+        p1_right_pihalf_element = self._get_mw_element(length=p1_rabi_period_right / 4 if not skip_p1_pi2s else 0,
+                                                       increment=0,
+                                                       amp=self.microwave_amplitude / p1_pfactor_right,
+                                                       freq=p1_freq_right,
+                                                       phase=0)
+
+        # append to full block
+        for idx, varying_pfac in enumerate(pfac_array):
+            p1pol_block.append(pihalf_element)
+            p1pol_block.append(p1_left_pihalf_element)
+            p1pol_block.append(p1_center_pihalf_element)
+            p1pol_block.append(p1_right_pihalf_element)
+
+            double_pi_element = self._get_multiple_mw_element(length= 1/(2*coupling),
+                                                              increment=0,
+                                                              amps=[self.microwave_amplitude / varying_pfac,
+                                                                    self.microwave_amplitude / p1_left_pfactor,
+                                                                    self.microwave_amplitude / p1_center_pfactor,
+                                                                    self.microwave_amplitude / p1_right_pfactor],
+                                                              freqs=[nv_freq,
+                                                                     p1_freq_left,
+                                                                     p1_freq_center,
+                                                                     p1_freq_right],
+                                                              phases=[90, 90, 90, 90])
+            #spin lock trials
+            if skip_p1_pi:
+                double_pi_element = self._get_mw_element(length=1 / (2 * coupling),
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / varying_pfac,
+                                                         freq=nv_freq,
+                                                         phase=90)
+
+            p1pol_block.append(double_pi_element)
+
+            p1pol_block.append(p1_right_pihalf_element)
+            p1pol_block.append(p1_center_pihalf_element)
+            p1pol_block.append(p1_left_pihalf_element)
+            p1pol_block.append(pihalf_read_element)
+            if end_laser:
+                p1pol_block.append(laser_element)
+                p1pol_block.append(delay_element)
+                p1pol_block.append(waiting_element)
+
+            if alternating:
+                p1pol_block.append(pihalf_element)
+                p1pol_block.append(p1_left_pihalf_element)
+                p1pol_block.append(p1_center_pihalf_element)
+                p1pol_block.append(p1_right_pihalf_element)
+
+                p1pol_block.append(double_pi_element)
+
+                p1pol_block.append(p1_right_pihalf_element)
+                p1pol_block.append(p1_center_pihalf_element)
+                p1pol_block.append(p1_left_pihalf_element)
+                p1pol_block.append(pihalf_read_element)
+
+                if end_laser:
+                    p1pol_block.append(laser_element)
+                    p1pol_block.append(delay_element)
+                    p1pol_block.append(waiting_element)
+
+        created_blocks.append(p1pol_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((p1pol_block.name, 0))
+
+        # Create and append sync trigger block if needed
+        if end_laser:
+            self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = list()
+        block_ensemble.measurement_information['controlled_variable'] = pfac_array
+        block_ensemble.measurement_information['labels'] = ('p_factor', '')
+        block_ensemble.measurement_information['units'] = ('', '')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        # append ensemble to created ensembles
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+    def generate_pulsepol(self, name='pulsepol', order = 1,
+                          nv_freq=1290.0e6, nv_pfactor=1, nv_rabi_period=30e-9,
+                          p1_frequencies=0, p1_pfactors=0, p1_rabi_periods=0,
+                          tau_start=5e-6, tau_step=5e-9, num_of_steps=50,
+                          alternating=False, read_phase_degree='0, 270',
+                          end_laser=True):
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+
+        if p1_frequencies is 0:
+            p1_frequencies = [2870.0e6]
+        if p1_pfactors is 0:
+            p1_pfactors = [1]
+        if p1_rabi_periods is 0:
+            p1_rabi_periods = [90e-9]
+
+        tau_array = tau_start + np.arange(num_of_steps) * tau_step
+
+        read_phases = np.fromstring(read_phase_degree, sep=",")
+
+        # laser elements
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        # Create block and append to created_blocks list
+        pulsepol_block = PulseBlock(name=name)
+
+        # NV pulses
+        nv_pihalf_x_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                                   increment=0,
+                                                   amp=self.microwave_amplitude / nv_pfactor,
+                                                   freq=nv_freq,
+                                                   phase=0.0)
+        nv_pihalf_minusx_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                                   increment=0,
+                                                   amp=self.microwave_amplitude / nv_pfactor,
+                                                   freq=nv_freq,
+                                                   phase=180.0)
+        nv_pihalf_y_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                                   increment=0,
+                                                   amp=self.microwave_amplitude / nv_pfactor,
+                                                   freq=nv_freq,
+                                                   phase=90.0)
+        nv_pihalf_minusy_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                                    increment=0,
+                                                    amp=self.microwave_amplitude / nv_pfactor,
+                                                    freq=nv_freq,
+                                                    phase=270.0)
+        nv_pi_minusx_element = self._get_mw_element(length=nv_rabi_period / 2,
+                                                    increment=0,
+                                                    amp=self.microwave_amplitude / nv_pfactor,
+                                                    freq=nv_freq,
+                                                    phase=180.0)
+        nv_pi_minusy_element = self._get_mw_element(length=nv_rabi_period / 2,
+                                                    increment=0,
+                                                    amp=self.microwave_amplitude / nv_pfactor,
+                                                    freq=nv_freq,
+                                                    phase=270.0)
+        nv_pi_y_element = self._get_mw_element(length=nv_rabi_period / 2,
+                                               increment=0,
+                                               amp=self.microwave_amplitude / nv_pfactor,
+                                               freq=nv_freq,
+                                               phase=90.0)
+        # NV readout pulses
+        pihalf_read_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                                   increment=0,
+                                                   amp=self.microwave_amplitude / nv_pfactor,
+                                                   freq=nv_freq,
+                                                   phase=read_phases[0])
+        pi3half_read_element = self._get_mw_element(length=nv_rabi_period / 4,
+                                                    increment=0,
+                                                    amp=self.microwave_amplitude / nv_pfactor,
+                                                    freq=nv_freq,
+                                                    phase=read_phases[1])
+
+        # free evolution elements
+        tau_spacing = tau_start/4 - nv_rabi_period / 2 - np.sum([p / 2 for p in p1_rabi_periods])
+        tau_element = self._get_idle_element(length=tau_spacing,
+                                             increment=tau_step/4)
+
+        self.log.debug(f"min(tau_pspacing)= {tau_spacing}. P1 params: t={p1_rabi_periods}, f={p1_frequencies}, p_fac={p1_pfactors}")
+
+        # append to full block
+        # DIRECTION UP
+        for n in range(2*order):
+            for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                p1_pihalf_y_element = self._get_mw_element(length=p1_period / 4,
+                                                           increment=0,
+                                                           amp=self.microwave_amplitude / p1_pfac,
+                                                           freq=p1_freq,
+                                                           phase=90.0)
+                p1_pihalf_minusx_element = self._get_mw_element(length=p1_period / 4,
+                                                           increment=0,
+                                                           amp=self.microwave_amplitude / p1_pfac,
+                                                           freq=p1_freq,
+                                                           phase=180.)
+                pulsepol_block.append(p1_pihalf_y_element)
+                ##pulsepol_block.append(p1_pihalf_minusx_element)
+            pulsepol_block.append(nv_pihalf_y_element)
+            ##pulsepol_block.append(nv_pihalf_minusx_element)
+            pulsepol_block.append(tau_element)
+
+            for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                p1_pi_minusx_element = self._get_mw_element(length=p1_period / 2,
+                                                            increment=0,
+                                                            amp=self.microwave_amplitude / p1_pfac,
+                                                            freq=p1_freq,
+                                                            phase=180.0)
+                p1_pi_y_element = self._get_mw_element(length=p1_period / 2,
+                                                            increment=0,
+                                                            amp=self.microwave_amplitude / p1_pfac,
+                                                            freq=p1_freq,
+                                                            phase=90)
+                pulsepol_block.append(p1_pi_minusx_element)
+                ##pulsepol_block.append(p1_pi_y_element)
+            pulsepol_block.append(nv_pi_minusx_element)
+            ##pulsepol_block.append(nv_pi_y_element)
+            pulsepol_block.append(tau_element)
+
+            for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                p1_pihalf_y_element = self._get_mw_element(length=p1_period / 4,
+                                                           increment=0,
+                                                           amp=self.microwave_amplitude / p1_pfac,
+                                                           freq=p1_freq,
+                                                           phase=90.0)
+                p1_pihalf_x_element = self._get_mw_element(length=p1_period / 4,
+                                                           increment=0,
+                                                           amp=self.microwave_amplitude / p1_pfac,
+                                                           freq=p1_freq,
+                                                           phase=0.0)
+                p1_pihalf_minusx_element = self._get_mw_element(length=p1_period / 4,
+                                                           increment=0,
+                                                           amp=self.microwave_amplitude / p1_pfac,
+                                                           freq=p1_freq,
+                                                           phase=180)
+                pulsepol_block.append(p1_pihalf_y_element)
+                pulsepol_block.append(p1_pihalf_x_element)
+                ##pulsepol_block.append(p1_pihalf_minusx_element)
+                ##pulsepol_block.append(p1_pihalf_y_element)
+            pulsepol_block.append(nv_pihalf_y_element)
+            pulsepol_block.append(nv_pihalf_x_element)
+            ##pulsepol_block.append(nv_pihalf_minusx_element)
+            ##pulsepol_block.append(nv_pihalf_y_element)
+            pulsepol_block.append(tau_element)
+
+            for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                p1_pi_y_element = self._get_mw_element(length=p1_period / 2,
+                                                       increment=0,
+                                                       amp=self.microwave_amplitude / p1_pfac,
+                                                       freq=p1_freq,
+                                                       phase=90.0)
+                p1_pi_x_element = self._get_mw_element(length=p1_period / 2,
+                                                       increment=0,
+                                                       amp=self.microwave_amplitude / p1_pfac,
+                                                       freq=p1_freq,
+                                                       phase=0.0)
+                pulsepol_block.append(p1_pi_y_element)
+                ##pulsepol_block.append(p1_pi_x_element)
+            pulsepol_block.append(nv_pi_y_element)
+            ##pulsepol_block.append(nv_pi_x_element)
+            pulsepol_block.append(tau_element)
+
+            for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                p1_pihalf_x_element = self._get_mw_element(length=p1_period / 4,
+                                                           increment=0,
+                                                           amp=self.microwave_amplitude / p1_pfac,
+                                                           freq=p1_freq,
+                                                           phase=0.0)
+                p1_pihalf_y_element = self._get_mw_element(length=p1_period / 4,
+                                                           increment=0,
+                                                           amp=self.microwave_amplitude / p1_pfac,
+                                                           freq=p1_freq,
+                                                           phase=90.0)
+                pulsepol_block.append(p1_pihalf_x_element)
+                ##pulsepol_block.append(p1_pihalf_y_element)
+            pulsepol_block.append(nv_pihalf_x_element)
+            ##pulsepol_block.append(nv_pihalf_y_element)
+
+        pulsepol_block[-1] = pihalf_read_element
+        if end_laser:
+            pulsepol_block.append(laser_element)
+            pulsepol_block.append(delay_element)
+            pulsepol_block.append(waiting_element)
+
+
+        #DIRECTION DOWN
+        if alternating:
+            # DIRECTION DOWN =? UP + REVERSED PI2
+            pulsepol_block.append(nv_pi_y_element)
+            for n in range(2 * order):
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                    p1_pihalf_y_element = self._get_mw_element(length=p1_period / 4,
+                                                               increment=0,
+                                                               amp=self.microwave_amplitude / p1_pfac,
+                                                               freq=p1_freq,
+                                                               phase=90.0)
+                    p1_pihalf_minusx_element = self._get_mw_element(length=p1_period / 4,
+                                                                    increment=0,
+                                                                    amp=self.microwave_amplitude / p1_pfac,
+                                                                    freq=p1_freq,
+                                                                    phase=180.)
+                    pulsepol_block.append(p1_pihalf_y_element)
+                    ##pulsepol_block.append(p1_pihalf_minusx_element)
+
+                pulsepol_block.append(nv_pihalf_y_element)
+                ##pulsepol_block.append(nv_pihalf_minusx_element)
+                pulsepol_block.append(tau_element)
+
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                    p1_pi_minusx_element = self._get_mw_element(length=p1_period / 2,
+                                                                increment=0,
+                                                                amp=self.microwave_amplitude / p1_pfac,
+                                                                freq=p1_freq,
+                                                                phase=180.0)
+                    p1_pi_y_element = self._get_mw_element(length=p1_period / 2,
+                                                           increment=0,
+                                                           amp=self.microwave_amplitude / p1_pfac,
+                                                           freq=p1_freq,
+                                                           phase=90)
+                    pulsepol_block.append(p1_pi_minusx_element)
+                    ##pulsepol_block.append(p1_pi_y_element)
+                pulsepol_block.append(nv_pi_minusx_element)
+                ##pulsepol_block.append(nv_pi_y_element)
+                pulsepol_block.append(tau_element)
+
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                    p1_pihalf_y_element = self._get_mw_element(length=p1_period / 4,
+                                                               increment=0,
+                                                               amp=self.microwave_amplitude / p1_pfac,
+                                                               freq=p1_freq,
+                                                               phase=90.0)
+                    p1_pihalf_x_element = self._get_mw_element(length=p1_period / 4,
+                                                               increment=0,
+                                                               amp=self.microwave_amplitude / p1_pfac,
+                                                               freq=p1_freq,
+                                                               phase=0.0)
+                    p1_pihalf_minusx_element = self._get_mw_element(length=p1_period / 4,
+                                                                    increment=0,
+                                                                    amp=self.microwave_amplitude / p1_pfac,
+                                                                    freq=p1_freq,
+                                                                    phase=180)
+                    pulsepol_block.append(p1_pihalf_y_element)
+                    pulsepol_block.append(p1_pihalf_x_element)
+                    ##pulsepol_block.append(p1_pihalf_minusx_element)
+                    ##pulsepol_block.append(p1_pihalf_y_element)
+                pulsepol_block.append(nv_pihalf_y_element)
+                pulsepol_block.append(nv_pihalf_x_element)
+                ##pulsepol_block.append(nv_pihalf_minusx_element)
+                ##pulsepol_block.append(nv_pihalf_y_element)
+                pulsepol_block.append(tau_element)
+
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                    p1_pi_y_element = self._get_mw_element(length=p1_period / 2,
+                                                           increment=0,
+                                                           amp=self.microwave_amplitude / p1_pfac,
+                                                           freq=p1_freq,
+                                                           phase=90.0)
+                    p1_pi_x_element = self._get_mw_element(length=p1_period / 2,
+                                                           increment=0,
+                                                           amp=self.microwave_amplitude / p1_pfac,
+                                                           freq=p1_freq,
+                                                           phase=0.0)
+                    pulsepol_block.append(p1_pi_y_element)
+                    ##pulsepol_block.append(p1_pi_x_element)
+                pulsepol_block.append(nv_pi_y_element)
+                ##pulsepol_block.append(nv_pi_x_element)
+                pulsepol_block.append(tau_element)
+
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                    p1_pihalf_x_element = self._get_mw_element(length=p1_period / 4,
+                                                               increment=0,
+                                                               amp=self.microwave_amplitude / p1_pfac,
+                                                               freq=p1_freq,
+                                                               phase=0.0)
+                    p1_pihalf_y_element = self._get_mw_element(length=p1_period / 4,
+                                                               increment=0,
+                                                               amp=self.microwave_amplitude / p1_pfac,
+                                                               freq=p1_freq,
+                                                               phase=90.0)
+                    pulsepol_block.append(p1_pihalf_x_element)
+                    ##pulsepol_block.append(p1_pihalf_y_element)
+                pulsepol_block.append(nv_pihalf_x_element)
+                ##pulsepol_block.append(nv_pihalf_y_element)
+
+            pulsepol_block[-1] = pihalf_read_element
+            if end_laser:
+                pulsepol_block.append(laser_element)
+                pulsepol_block.append(delay_element)
+                pulsepol_block.append(waiting_element)
+
+        created_blocks.append(pulsepol_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((pulsepol_block.name, num_of_steps - 1))
+
+        # Create and append sync trigger block
+        self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = list()
+        block_ensemble.measurement_information['controlled_variable'] = tau_array
+        block_ensemble.measurement_information['labels'] = ('tau', '')
+        block_ensemble.measurement_information['units'] = ('s', '')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        # append ensemble to created ensembles
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+
+    def generate_pulsepol_parallel(self, name='pulsepol_parallel', order = 1,
+                          nv_freq=1290.0e6, nv_pfactor=1, nv_rabi_period=30e-9,
+                          p1_freq=0, p1_pfactor=0, p1_rabi_period=0,
+                          tau_start=5e-6, tau_step=5e-9, num_of_steps=50,
+                          alternating=False, read_phase_degree='0, 180', end_laser=True):
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+
+        tau_array = tau_start + np.arange(num_of_steps) * tau_step
+
+        read_phases = np.fromstring(read_phase_degree, sep=",")
+
+        # laser elements
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        # Create block and append to created_blocks list
+        pulsepol_sim_block = PulseBlock(name=name)
+
+        # simultaneous pulses
+        pihalf_x_element = self._get_multiple_mw_element(length=nv_rabi_period / 4,
+                                                      increment=0,
+                                                      amps=[self.microwave_amplitude / nv_pfactor,
+                                                            self.microwave_amplitude / p1_pfactor],
+                                                      freqs=[nv_freq,
+                                                             p1_freq],
+                                                      phases=[0, 0])
+        pi_minusx_element = self._get_multiple_mw_element(length=nv_rabi_period / 2,
+                                                         increment=0,
+                                                         amps=[self.microwave_amplitude / nv_pfactor,
+                                                               self.microwave_amplitude / p1_pfactor],
+                                                         freqs=[nv_freq,
+                                                                p1_freq],
+                                                         phases=[180, 180])
+        pihalf_y_element = self._get_multiple_mw_element(length=nv_rabi_period / 4,
+                                                         increment=0,
+                                                         amps=[self.microwave_amplitude / nv_pfactor,
+                                                               self.microwave_amplitude / p1_pfactor],
+                                                         freqs=[nv_freq,
+                                                                p1_freq],
+                                                         phases=[90, 90])
+        pi_y_element = self._get_multiple_mw_element(length=nv_rabi_period / 2,
+                                                         increment=0,
+                                                         amps=[self.microwave_amplitude / nv_pfactor,
+                                                               self.microwave_amplitude / p1_pfactor],
+                                                         freqs=[nv_freq,
+                                                                p1_freq],
+                                                         phases=[90, 90])
+        #readout pulses
+        pihalf_read_element = self._get_multiple_mw_element(length=nv_rabi_period / 4,
+                                                      increment=0,
+                                                      amps=[self.microwave_amplitude / nv_pfactor,
+                                                            self.microwave_amplitude / p1_pfactor],
+                                                      freqs=[nv_freq,
+                                                             p1_freq],
+                                                      phases=[read_phases[0], 0])
+        pi3half_read_element = self._get_multiple_mw_element(length=nv_rabi_period / 4,
+                                                      increment=0,
+                                                      amps=[self.microwave_amplitude / nv_pfactor,
+                                                            self.microwave_amplitude / p1_pfactor],
+                                                      freqs=[nv_freq,
+                                                             p1_freq],
+                                                      phases=[read_phases[1], 0])
+
+        # free evolution elements
+        tau_spacing = tau_start/4 - nv_rabi_period/2
+        tau_element = self._get_idle_element(length=tau_spacing,
+                                             increment=tau_step / 4)
+
+        # append elements to block
+        for n in range(2 * order):
+            pulsepol_sim_block.append(pihalf_y_element)
+            pulsepol_sim_block.append(tau_element)
+
+            pulsepol_sim_block.append(pi_minusx_element)
+            pulsepol_sim_block.append(tau_element)
+
+            pulsepol_sim_block.append(pihalf_y_element)
+            pulsepol_sim_block.append(pihalf_x_element)
+            pulsepol_sim_block.append(tau_element)
+
+            pulsepol_sim_block.append(pi_y_element)
+            pulsepol_sim_block.append(tau_element)
+
+            pulsepol_sim_block.append(pihalf_x_element)
+
+        pulsepol_sim_block[-1] = pihalf_read_element
+        if end_laser:
+            pulsepol_sim_block.append(laser_element)
+            pulsepol_sim_block.append(delay_element)
+            pulsepol_sim_block.append(waiting_element)
+
+        if alternating:
+            pulsepol_sim_block.append(pi_y_element)
+            for n in range(2 * order):
+                pulsepol_sim_block.append(pihalf_x_element)
+                pulsepol_sim_block.append(tau_element)
+
+                pulsepol_sim_block.append(pi_y_element)
+                pulsepol_sim_block.append(tau_element)
+
+                pulsepol_sim_block.append(pihalf_x_element)
+                pulsepol_sim_block.append(pihalf_y_element)
+                pulsepol_sim_block.append(tau_element)
+
+                pulsepol_sim_block.append(pi_minusx_element)
+                pulsepol_sim_block.append(tau_element)
+
+                pulsepol_sim_block.append(pihalf_y_element)
+
+
+            pulsepol_sim_block[-1] = pi3half_read_element
+            if end_laser:
+                pulsepol_sim_block.append(laser_element)
+                pulsepol_sim_block.append(delay_element)
+                pulsepol_sim_block.append(waiting_element)
+
+        created_blocks.append(pulsepol_sim_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((pulsepol_sim_block.name, num_of_steps - 1))
+
+        # Create and append sync trigger block
+        self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = list()
+        block_ensemble.measurement_information['controlled_variable'] = tau_array
+        block_ensemble.measurement_information['labels'] = ('tau', '')
+        block_ensemble.measurement_information['units'] = ('s', '')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        # append ensemble to created ensembles
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+
+    def generate_pulsepol_ramsey(self, name='pulsepol_ramsey', order = 1,
+                                 nv_freq=1290.0e6, nv_pfactor=1, nv_rabi_period=30e-9,
+                                 p1_frequencies=0, p1_pfactors=0, p1_rabi_periods=0,
+                                 tau_spacing = 3e-6,
+                                 tau_ramsey_start=1e-6, num_of_steps = 50, step_size = 0.1e-6,
+                                 ramsey_offset = 0, repol_laser_length = 3e-6,
+                                 alternating=False, add_pi_flip = False,
+                                 change_repol_laser=False, turnoff_pol=False):
+
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+        if p1_frequencies is 0:
+            p1_frequencies = [2870.0e6]
+        if p1_pfactors is 0:
+            p1_pfactors = [1]
+        if p1_rabi_periods is 0:
+            p1_rabi_periods = [90e-9]
+
+        # create the elements
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        repol_laser_element = self._get_laser_gate_element(length=repol_laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        tau_ramsey_array = tau_ramsey_start + np.arange(num_of_steps) * step_size
+
+        if not turnoff_pol:
+            idx_ignored_lasers = list(range(0, (4 if alternating else 2)* num_of_steps, 2))
+        else:
+            idx_ignored_lasers = []
+
+        #create blocks
+        mega_block = PulseBlock(name=name)
+
+        if not turnoff_pol:
+            pulsepol_element, _ , _ = self.generate_pulsepol(order = order,
+                          nv_freq=nv_freq, nv_pfactor=nv_pfactor, nv_rabi_period=nv_rabi_period,
+                          p1_frequencies=p1_frequencies, p1_pfactors=p1_pfactors, p1_rabi_periods=p1_rabi_periods,
+                          tau_start=tau_spacing, tau_step=0, num_of_steps=1,
+                          alternating=False, read_phase_degree='0, 0', end_laser=False)
+            pulsepol_element = pulsepol_element[0]
+            mega_block.extend(pulsepol_element)
+
+            if change_repol_laser:
+                mega_block.append(repol_laser_element)
+            else:
+                mega_block.append(laser_element)
+            mega_block.append(delay_element)
+            mega_block.append(waiting_element)
+
+        if add_pi_flip:
+            for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                     increment=0,
+                                                     amp=self.microwave_amplitude / p1_pfac,
+                                                     freq=p1_freq,
+                                                     phase=0)
+                mega_block.append(p1_pi_element)
+
+
+        ramsey_meas = self._get_generation_method('ramsey')
+        ramsey_element, _, _ =  ramsey_meas(tau_start=tau_ramsey_start,
+                                            tau_step=step_size,
+                                            num_of_points=1,
+                                            offset = ramsey_offset,
+                                            alternating=False,
+                                            read_phase_degree='0, 0')
+        ramsey_element = ramsey_element[0]
+        mega_block.extend(ramsey_element)
+
+        if alternating:
+            if not turnoff_pol:
+                pulsepol_element, _, _ = self.generate_pulsepol(order=order,
+                                            nv_freq=nv_freq, nv_pfactor=nv_pfactor, nv_rabi_period=nv_rabi_period,
+                                            p1_frequencies=p1_frequencies, p1_pfactors=p1_pfactors,
+                                            p1_rabi_periods=p1_rabi_periods,
+                                            tau_start=tau_spacing, tau_step=0, num_of_steps=1,
+                                            alternating=False, read_phase_degree='0, 0', end_laser=False)
+                pulsepol_element = pulsepol_element[0]
+                mega_block.extend(pulsepol_element)
+
+                if change_repol_laser:
+                    mega_block.append(repol_laser_element)
+                else:
+                    mega_block.append(laser_element)
+                mega_block.append(delay_element)
+                mega_block.append(waiting_element)
+
+            if add_pi_flip:
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                    p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / p1_pfac,
+                                                         freq=p1_freq,
+                                                         phase=0)
+                    mega_block.append(p1_pi_element)
+
+            ramsey_meas = self._get_generation_method('ramsey')
+            ramsey_element, _, _ = ramsey_meas(tau_start=tau_ramsey_start,
+                                               tau_step=step_size,
+                                               num_of_points=1,
+                                               offset=ramsey_offset,
+                                               alternating=False,
+                                               read_phase_degree='180, 180')
+            ramsey_element = ramsey_element[0]
+            mega_block.extend(ramsey_element)
+
+
+        created_blocks.append(mega_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((mega_block.name, num_of_steps - 1))
+
+        # Create and append sync trigger block if needed
+        self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+        number_of_lasers += len(idx_ignored_lasers)
+        self.log.debug(f"Ignoring laser pulses with idx= {idx_ignored_lasers}. Laser num= {number_of_lasers}")
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = idx_ignored_lasers
+        block_ensemble.measurement_information['controlled_variable'] = tau_ramsey_array
+        block_ensemble.measurement_information['labels'] = ('tau', '')
+        block_ensemble.measurement_information['units'] = ('s', '')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+
+    def generate_pulsepol_ramsey_repetitive(self, name='pulsepol_ramsey_repetitive', order = 1, pol_steps = 1,
+                                 nv_freq=1290.0e6, nv_pfactor=1, nv_rabi_period=30e-9,
+                                 p1_frequencies=0, p1_pfactors=0, p1_rabi_periods=0,
+                                 tau_spacing = 3e-6,
+                                 tau_ramsey_start=1e-6, num_of_steps = 50, step_size = 0.1e-6,
+                                 ramsey_offset = 0, repol_laser_length = 3e-6, idle_time=1e-6,
+                                 long_laser_length=3e-6,
+                                 alternating=False, add_pi_flip = False, add_long_laser=False,
+                                 change_repol_laser=False, turnoff_pol=False, add_waiting=False):
+
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+        if p1_frequencies is 0:
+            p1_frequencies = [2870.0e6]
+        if p1_pfactors is 0:
+            p1_pfactors = [1]
+        if p1_rabi_periods is 0:
+            p1_rabi_periods = [90e-9]
+
+        # create the elements
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        repol_laser_element = self._get_laser_gate_element(length=repol_laser_length,
+                                                     increment=0)
+        long_laser_element = self._get_laser_gate_element(length=long_laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        tau_ramsey_array = tau_ramsey_start + np.arange(num_of_steps) * step_size
+
+        if not turnoff_pol:
+            idx_of_lasers = list(range((pol_steps+1) * (2*num_of_steps if alternating else num_of_steps)))
+            readout_lasers = [i for i in range(pol_steps, len(idx_of_lasers), pol_steps + 1)]
+            idx_ignored_lasers = [i for i in idx_of_lasers if i not in readout_lasers]
+            if add_long_laser:
+                idx_of_lasers = list(range((pol_steps + 2) * (2 * num_of_steps if alternating else num_of_steps)))
+                readout_lasers = [i for i in range(pol_steps + 1, len(idx_of_lasers), pol_steps + 2)]
+                idx_ignored_lasers = [i for i in idx_of_lasers if i not in readout_lasers]
+        else:
+            idx_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+            readout_lasers = 2 * num_of_steps if alternating else num_of_steps
+            idx_ignored_lasers = []
+
+        #create blocks
+        mega_block = PulseBlock(name=name)
+
+        if not turnoff_pol:
+            for n in range(pol_steps):
+                pulsepol_element, _ , _ = self.generate_pulsepol(order = order,
+                              nv_freq=nv_freq, nv_pfactor=nv_pfactor, nv_rabi_period=nv_rabi_period,
+                              p1_frequencies=p1_frequencies, p1_pfactors=p1_pfactors, p1_rabi_periods=p1_rabi_periods,
+                              tau_start=tau_spacing, tau_step=0, num_of_steps=1,
+                              alternating=False, read_phase_degree='0, 0', end_laser=False)
+                pulsepol_element = pulsepol_element[0]
+                mega_block.extend(pulsepol_element)
+
+                if change_repol_laser:
+                    mega_block.append(repol_laser_element)
+                else:
+                    mega_block.append(laser_element)
+                mega_block.append(delay_element)
+                mega_block.append(waiting_element)
+
+        if add_pi_flip:
+            for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                p1_pi_element = self._get_mw_element(length=p1_period*p1_pfac / 2,
+                                                     increment=0,
+                                                     amp=self.microwave_amplitude / p1_pfac,
+                                                     freq=p1_freq,
+                                                     phase=0)
+                mega_block.append(p1_pi_element)
+
+        if add_waiting:
+            optional_idle_element = self._get_idle_element(length=idle_time,
+                                                           increment=0)
+            mega_block.append(optional_idle_element)
+
+        if add_long_laser:
+            mega_block.append(long_laser_element)
+            mega_block.append(delay_element)
+            mega_block.append(waiting_element)
+
+        ramsey_meas = self._get_generation_method('ramsey')
+        ramsey_element, _, _ =  ramsey_meas(tau_start=tau_ramsey_start,
+                                            tau_step=step_size,
+                                            num_of_points=1,
+                                            offset = ramsey_offset,
+                                            alternating=False,
+                                            read_phase_degree='0, 0')
+        ramsey_element = ramsey_element[0]
+        mega_block.extend(ramsey_element)
+
+        if alternating:
+            if not turnoff_pol:
+                for n in range(pol_steps):
+                    pulsepol_element, _, _ = self.generate_pulsepol(order=order,
+                                                nv_freq=nv_freq, nv_pfactor=nv_pfactor, nv_rabi_period=nv_rabi_period,
+                                                p1_frequencies=p1_frequencies, p1_pfactors=p1_pfactors,
+                                                p1_rabi_periods=p1_rabi_periods,
+                                                tau_start=tau_spacing, tau_step=0, num_of_steps=1,
+                                                alternating=False, read_phase_degree='0, 0', end_laser=False)
+                    pulsepol_element = pulsepol_element[0]
+                    mega_block.extend(pulsepol_element)
+
+                    if change_repol_laser:
+                        mega_block.append(repol_laser_element)
+                    else:
+                        mega_block.append(laser_element)
+                    mega_block.append(delay_element)
+                    mega_block.append(waiting_element)
+
+
+            if add_pi_flip:
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                        p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                             increment=0,
+                                                             amp=self.microwave_amplitude / p1_pfac,
+                                                             freq=p1_freq,
+                                                             phase=0)
+                        mega_block.append(p1_pi_element)
+
+            if add_waiting:
+                optional_idle_element = self._get_idle_element(length=idle_time,
+                                                               increment=0)
+                mega_block.append(optional_idle_element)
+
+            if add_long_laser:
+                mega_block.append(long_laser_element)
+                mega_block.append(delay_element)
+                mega_block.append(waiting_element)
+
+            ramsey_meas = self._get_generation_method('ramsey')
+            ramsey_element, _, _ = ramsey_meas(tau_start=tau_ramsey_start,
+                                               tau_step=step_size,
+                                               num_of_points=1,
+                                               offset=ramsey_offset,
+                                               alternating=False,
+                                               read_phase_degree='180, 180')
+            ramsey_element = ramsey_element[0]
+            mega_block.extend(ramsey_element)
+
+
+        created_blocks.append(mega_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((mega_block.name, num_of_steps - 1))
+
+        # Create and append sync trigger block if needed
+        self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+        number_of_lasers += len(idx_ignored_lasers)
+        self.log.debug(f"Ignoring laser pulses with idx= {idx_ignored_lasers} // Laser number = {number_of_lasers}")
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = idx_ignored_lasers
+        block_ensemble.measurement_information['controlled_variable'] = tau_ramsey_array
+        block_ensemble.measurement_information['labels'] = ('tau', '')
+        block_ensemble.measurement_information['units'] = ('s', '')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+
+    def generate_podmr_sam(self, name='podmr_sam', p_scale = 1, rabi_period=30e-9, freq_start=2870.0e6, freq_step=0.2e6,
+                            num_of_points=50, read_phase_degree='0, 180'):
+        """
+        simple Pulsed ODMR with alternating option, used in PulsePol ODMR
+        """
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+
+        freq_array = freq_start + np.arange(num_of_points) * freq_step
+
+        read_phases = np.fromstring(read_phase_degree, sep=",")
+
+        # create the elements
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        # Create block and append to created_blocks list
+        podmr_block = PulseBlock(name=name)
+
+        for idx, mw_freq in enumerate(freq_array):
+            pi_element = self._get_mw_element(length=rabi_period*p_scale/2,
+                                              increment=0,
+                                              amp=self.microwave_amplitude/p_scale,
+                                              freq=mw_freq,
+                                              phase=read_phases[0])
+
+            podmr_block.append(pi_element)
+            podmr_block.append(laser_element)
+            podmr_block.append(delay_element)
+            podmr_block.append(waiting_element)
+
+        created_blocks.append(podmr_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((podmr_block.name, 0))
+
+        # Create and append sync trigger block if needed
+        self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+        # add metadata to invoke settings later on
+        block_ensemble.measurement_information['alternating'] = False
+        block_ensemble.measurement_information['laser_ignore_list'] = list()
+        block_ensemble.measurement_information['controlled_variable'] = freq_array
+        block_ensemble.measurement_information['labels'] = ('frequency', '')
+        block_ensemble.measurement_information['units'] = ('Hz', '')
+        block_ensemble.measurement_information['number_of_lasers'] = num_of_points
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+    # TO DO: PROBABLY NOT WORKING
+    def generate_pulsepol_odmr(self, name='pulsepol_odmr', order = 1, pol_steps = 1,
+                                 nv_freq=1290.0e6, nv_pfactor=1, nv_rabi_period=30e-9,
+                                 p1_frequencies=0, p1_pfactors=0, p1_rabi_periods=0,
+                                 tau_spacing = 3e-6,
+                                 f_start = 1.2e9, num_of_steps = 50, step_size = 0.1e-6, rabi_period=30e-9,
+                                 podmr_pscale=1, add_pi_flip = False, turnoff_pol=False):
+
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+        if p1_frequencies is 0:
+            p1_frequencies = [2870.0e6]
+        if p1_pfactors is 0:
+            p1_pfactors = [1]
+        if p1_rabi_periods is 0:
+            p1_rabi_periods = [90e-9]
+
+        # create the elements
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        freq_array = f_start + np.arange(num_of_steps) * step_size
+
+
+        if not turnoff_pol:
+            idx_of_lasers = list(range((pol_steps+1) * num_of_steps))
+            readout_lasers = [i for i in range(pol_steps, len(idx_of_lasers), pol_steps + 1)]
+            idx_ignored_lasers = [i for i in idx_of_lasers if i not in readout_lasers]
+        else:
+            idx_of_lasers = num_of_steps
+            readout_lasers = num_of_steps
+            idx_ignored_lasers = []
+
+        #create blocks
+        mega_block = PulseBlock(name=name)
+
+        if not turnoff_pol:
+            for n in range(pol_steps):
+                pulsepol_element, _ , _ = self.generate_pulsepol(order = order,
+                              nv_freq=nv_freq, nv_pfactor=nv_pfactor, nv_rabi_period=nv_rabi_period,
+                              p1_frequencies=p1_frequencies, p1_pfactors=p1_pfactors, p1_rabi_periods=p1_rabi_periods,
+                              tau_start=tau_spacing, tau_step=0, num_of_steps=1,
+                              alternating=False, read_phase_degree='0, 0', end_laser=False)
+                pulsepol_element = pulsepol_element[0]
+                mega_block.extend(pulsepol_element)
+
+
+                mega_block.append(laser_element)
+                mega_block.append(delay_element)
+                mega_block.append(waiting_element)
+
+        if add_pi_flip:
+            for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                     increment=0,
+                                                     amp=self.microwave_amplitude / p1_pfac,
+                                                     freq=p1_freq,
+                                                     phase=0)
+                mega_block.append(p1_pi_element)
+
+
+        podmr_element, _, _ =  self.generate_podmr_sam(p_scale = podmr_pscale, freq_start=f_start, freq_step=step_size,
+                                                       rabi_period=rabi_period, num_of_points=1, read_phase_degree='0,0')
+        podmr_element = podmr_element[0]
+        mega_block.extend(podmr_element)
+
+
+        created_blocks.append(mega_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((mega_block.name, num_of_steps - 1))
+
+        # Create and append sync trigger block if needed
+        self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+
+        # add metadata to invoke settings later on
+        number_of_lasers = num_of_steps
+        number_of_lasers += len(idx_ignored_lasers)
+        self.log.debug(f"Ignoring laser pulses with idx= {idx_ignored_lasers} // Laser number = {number_of_lasers}")
+        block_ensemble.measurement_information['alternating'] = False
+        block_ensemble.measurement_information['laser_ignore_list'] = idx_ignored_lasers
+        block_ensemble.measurement_information['controlled_variable'] = freq_array
+        block_ensemble.measurement_information['labels'] = ('frequency', '')
+        block_ensemble.measurement_information['units'] = ('Hz', '')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+    def generate_rabi_sam(self, name='rabi_sam', tau_start=5e-9, tau_step=50e-9,
+                          num_of_points=50, p_scale = 1, frequency=1.5e9,
+                          multidrive=False, freqs=0, p_facs=0,
+                          alternating=True, read_phase_degree='0, 180',
+                          parallel_pulse=True, end_laser=True):
+        """
+        simple rabi with no end laser so it can be used in other meas
+        """
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+
+        if multidrive:
+            alternating = False
+
+        tau_array = tau_start + np.arange(num_of_points) * tau_step
+        read_phases = np.fromstring(read_phase_degree, sep=",")
+        if freqs is 0:
+            freqs = [2870.0e6]
+        if p_facs is 0:
+            p_facs = [1]
+
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        if not multidrive:
+            mw_element = self._get_mw_element(length=tau_start,
+                                              increment=tau_step,
+                                              amp=self.microwave_amplitude/p_scale,
+                                              freq=frequency,
+                                              phase=read_phases[0])
+
+            pi_element = self._get_mw_element(length=self.rabi_period*p_scale / 2,
+                                              increment=0,
+                                              amp=self.microwave_amplitude/p_scale,
+                                              freq=frequency,
+                                              phase=read_phases[1])
+
+        if multidrive:
+            amps = [self.microwave_amplitude / fac for fac in p_facs]
+            phases = [0] * len(amps)
+            multi_mw_element = self._get_multiple_mw_element(length=tau_start,
+                                                          increment=tau_step,
+                                                          amps=amps,
+                                                          freqs=freqs,
+                                                          phases=phases)
+        #create block
+        rabi_block = PulseBlock(name=name)
+
+        if not multidrive:
+            rabi_block.append(mw_element)
+            if end_laser:
+                rabi_block.append(laser_element)
+                rabi_block.append(delay_element)
+                rabi_block.append(waiting_element)
+
+            if alternating:
+                rabi_block.append(mw_element)
+                rabi_block.append(pi_element)
+                if end_laser:
+                    rabi_block.append(laser_element)
+                    rabi_block.append(delay_element)
+                    rabi_block.append(waiting_element)
+
+        if multidrive:
+            if parallel_pulse:
+                rabi_block.append(multi_mw_element)
+            if not parallel_pulse:
+                for frequency, pfactor in zip(freqs, p_facs):
+                    pi_element = self._get_mw_element(length=tau_start,
+                                                      increment=tau_step,
+                                                      amp=self.microwave_amplitude / pfactor,
+                                                      freq=frequency,
+                                                      phase=0)
+                    rabi_block.append(pi_element)
+            if end_laser:
+                rabi_block.append(laser_element)
+                rabi_block.append(delay_element)
+                rabi_block.append(waiting_element)
+
+
+        created_blocks.append(rabi_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((rabi_block.name, num_of_points - 1))
+
+        # Create and append sync trigger block if needed
+        self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+        # add metadata to invoke settings later on
+        laser_num = num_of_points if multidrive else (2 * num_of_points if alternating else num_of_points)
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = list()
+        block_ensemble.measurement_information['controlled_variable'] = tau_array
+        block_ensemble.measurement_information['units'] = ('s', '')
+        block_ensemble.measurement_information['labels'] = ('Tau', 'Signal')
+        block_ensemble.measurement_information['number_of_lasers'] = laser_num
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        # Append ensemble to created_ensembles list
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+
+    def generate_timedeer_multidrive(self, name='timedeer_multidrive',
+                                 nv_freq=1290.0e6, nv_pfactor=1, nv_rabi_period=30e-9,
+                                 p1_frequencies=0, p1_pfactors=0, p1_rabi_periods=0,
+                                 tau_start=1e-6, tau_step=1e-6, num_of_points=50,
+                                 he_tau=5e-6, read_phase_degree='0, 180',
+                                 two_pi_deer=True, end_laser=True, parallel_p1_pulse=True, alternating=True):
+
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+        if p1_frequencies is 0:
+            p1_frequencies = [2870.0e6]
+        if p1_pfactors is 0:
+            p1_pfactors = [1]
+        if p1_rabi_periods is 0:
+            p1_rabi_periods = [90e-9]
+
+        tau_array = tau_start + np.arange(num_of_points) * tau_step
+
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        read_phases = np.fromstring(read_phase_degree, sep=",")
+
+        # create pulses
+        nv_pihalf_element = self._get_mw_element(length=self.rabi_period * nv_pfactor / 4,
+                                                 increment=0,
+                                                 amp=self.microwave_amplitude / nv_pfactor,
+                                                 freq=self.microwave_frequency,
+                                                 phase=0)
+        nv_pi_element = self._get_mw_element(length=self.rabi_period * nv_pfactor / 2,
+                                             increment=0,
+                                             amp=self.microwave_amplitude / nv_pfactor,
+                                             freq=self.microwave_frequency,
+                                             phase=0)
+        nv_pihalf_read_element = self._get_mw_element(length=self.rabi_period * nv_pfactor / 4,
+                                                      increment=0,
+                                                      amp=self.microwave_amplitude / nv_pfactor,
+                                                      freq=self.microwave_frequency,
+                                                      phase=read_phases[0])
+        nv_pihalf_read2_element = self._get_mw_element(length=self.rabi_period * nv_pfactor / 4,
+                                                       increment=0,
+                                                       amp=self.microwave_amplitude / nv_pfactor,
+                                                       freq=self.microwave_frequency,
+                                                       phase=read_phases[1])
+
+        # free evolution elements
+        if parallel_p1_pulse:
+            amps = [self.microwave_amplitude / fac for fac in p1_pfactors]
+            phases = [0] * len(amps)
+            # length of the multidrive as the average of all the pi lengths
+            p1_pi_length = sum(rabi * pfac / 2 for rabi, pfac in zip(p1_rabi_periods, p1_pfactors)) / len(
+                p1_rabi_periods)
+            p1_pi_pulse = self._get_multiple_mw_element(length=p1_pi_length,
+                                                        increment=0,
+                                                        amps=amps,
+                                                        freqs=p1_frequencies,
+                                                        phases=phases)
+
+            if not two_pi_deer:
+                tau_hahn_element = self._get_idle_element(length=he_tau, increment=0)
+            else:
+                tau_hahn_element = self._get_idle_element(length=he_tau - p1_pi_length, increment=0)
+            tau1_element = self._get_idle_element(length=tau_start, increment=tau_step)
+            tau2 = he_tau - tau_start - p1_pi_length
+            tau2_element = self._get_idle_element(length=tau2, increment=-tau_step)
+
+        if not parallel_p1_pulse:
+
+            p1_pulses_length = sum(rabi * pfac / 2 for rabi, pfac in zip(p1_rabi_periods, p1_pfactors))
+
+            if not two_pi_deer:
+                tau_hahn_element = self._get_idle_element(length=he_tau, increment=0)
+            else:
+                tau_hahn_element = self._get_idle_element(length=he_tau - p1_pulses_length, increment=0)
+            tau1_element = self._get_idle_element(length=tau_start, increment=tau_step)
+            tau2 = he_tau - tau_start - p1_pulses_length
+            tau2_element = self._get_idle_element(length=tau2, increment=-tau_step)
+
+
+        # Create block and append to created_blocks list
+        timedeer_block = PulseBlock(name=name)
+
+        timedeer_block.append(nv_pihalf_element)
+        if two_pi_deer:
+            if parallel_p1_pulse:
+                timedeer_block.append(p1_pi_pulse)
+                timedeer_block.append(tau_hahn_element)
+            if not parallel_p1_pulse:
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                    p1_pi_element = self._get_mw_element(length=p1_period*p1_pfac / 2,
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / p1_pfac,
+                                                         freq=p1_freq,
+                                                         phase=0)
+                    timedeer_block.append(p1_pi_element)
+                timedeer_block.append(tau_hahn_element)
+        else:
+            timedeer_block.append(tau_hahn_element)
+        timedeer_block.append(nv_pi_element)
+
+        timedeer_block.append(tau2_element)
+        if parallel_p1_pulse:
+            timedeer_block.append(p1_pi_pulse)
+        if not parallel_p1_pulse:
+            for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                p1_pi_element = self._get_mw_element(length=p1_period*p1_pfac / 2,
+                                                     increment=0,
+                                                     amp=self.microwave_amplitude / p1_pfac,
+                                                     freq=p1_freq,
+                                                     phase=0)
+                timedeer_block.append(p1_pi_element)
+
+        timedeer_block.append(tau1_element)
+        timedeer_block.append(nv_pihalf_read_element)
+        if end_laser:
+            timedeer_block.append(laser_element)
+            timedeer_block.append(delay_element)
+            timedeer_block.append(waiting_element)
+
+        if alternating:
+            timedeer_block.append(nv_pihalf_element)
+            if two_pi_deer:
+                if parallel_p1_pulse:
+                    timedeer_block.append(p1_pi_pulse)
+                    timedeer_block.append(tau_hahn_element)
+                if not parallel_p1_pulse:
+                    for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                        p1_pi_element = self._get_mw_element(length=p1_period*p1_pfac / 2,
+                                                             increment=0,
+                                                             amp=self.microwave_amplitude / p1_pfac,
+                                                             freq=p1_freq,
+                                                             phase=0)
+                        timedeer_block.append(p1_pi_element)
+                    timedeer_block.append(tau_hahn_element)
+            else:
+                timedeer_block.append(tau_hahn_element)
+            timedeer_block.append(nv_pi_element)
+
+            timedeer_block.append(tau2_element)
+            if parallel_p1_pulse:
+                timedeer_block.append(p1_pi_pulse)
+            if not parallel_p1_pulse:
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                    p1_pi_element = self._get_mw_element(length=p1_period*p1_pfac / 2,
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / p1_pfac,
+                                                         freq=p1_freq,
+                                                         phase=0)
+                    timedeer_block.append(p1_pi_element)
+
+            timedeer_block.append(tau1_element)
+            timedeer_block.append(nv_pihalf_read2_element)
+            if end_laser:
+                timedeer_block.append(laser_element)
+                timedeer_block.append(delay_element)
+                timedeer_block.append(waiting_element)
+
+        created_blocks.append(timedeer_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((timedeer_block.name, num_of_points - 1))
+
+        # Create and append sync trigger block if needed
+        self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_points if alternating else num_of_points
+        if parallel_p1_pulse:
+            self.log.debug(f"P1 pi pulse length = {p1_pi_length*10**9:.1f} ns")
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = list()
+        block_ensemble.measurement_information['controlled_variable'] = tau_array
+        block_ensemble.measurement_information['units'] = ('s', '')
+        block_ensemble.measurement_information['labels'] = ('Tau', 'Signal')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        # append ensemble to created ensembles
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+    def generate_timedeer_multidrive_truerabi(self, name='timedeer_multidrive_truerabi',
+                                 nv_freq=1290.0e6, nv_pfactor=1, nv_rabi_period=30e-9,
+                                 p1_frequencies=0, p1_pfactors=0, p1_rabi_periods=0,
+                                 tau_start=1e-6, tau_step=1e-6, num_of_points=50,
+                                 he_tau=5e-6, read_phase_degree='0, 180',
+                                 two_pi_deer=True, end_laser=True, alternating=True):
+        """
+        time deer multidrive: the rabi periods of the p1 are not rescale by the p1 pfactors but the amplitudes are
+        use when the period is correctly calibrated vua a deer rabi with given pfactor
+        """
+
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+        if p1_frequencies is 0:
+            p1_frequencies = [2870.0e6]
+        if p1_pfactors is 0:
+            p1_pfactors = [1]
+        if p1_rabi_periods is 0:
+            p1_rabi_periods = [90e-9]
+
+        tau_array = tau_start + np.arange(num_of_points) * tau_step
+
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        read_phases = np.fromstring(read_phase_degree, sep=",")
+
+        # create pulses
+        nv_pihalf_element = self._get_mw_element(length=self.rabi_period * nv_pfactor / 4,
+                                                 increment=0,
+                                                 amp=self.microwave_amplitude / nv_pfactor,
+                                                 freq=self.microwave_frequency,
+                                                 phase=0)
+        nv_pi_element = self._get_mw_element(length=self.rabi_period * nv_pfactor / 2,
+                                             increment=0,
+                                             amp=self.microwave_amplitude / nv_pfactor,
+                                             freq=self.microwave_frequency,
+                                             phase=0)
+        nv_pihalf_read_element = self._get_mw_element(length=self.rabi_period * nv_pfactor / 4,
+                                                      increment=0,
+                                                      amp=self.microwave_amplitude / nv_pfactor,
+                                                      freq=self.microwave_frequency,
+                                                      phase=read_phases[0])
+        nv_pihalf_read2_element = self._get_mw_element(length=self.rabi_period * nv_pfactor / 4,
+                                                       increment=0,
+                                                       amp=self.microwave_amplitude / nv_pfactor,
+                                                       freq=self.microwave_frequency,
+                                                       phase=read_phases[1])
+
+        # free evolution elements
+        p1_pulses_length = sum(rabi/2 for rabi in p1_rabi_periods)
+        if not two_pi_deer:
+            tau_hahn_element = self._get_idle_element(length=he_tau, increment=0)
+        else:
+            tau_hahn_element = self._get_idle_element(length=he_tau - p1_pulses_length, increment=0)
+        tau1_element = self._get_idle_element(length=tau_start, increment=tau_step)
+        tau2 = he_tau - tau_start - p1_pulses_length
+        tau2_element = self._get_idle_element(length=tau2, increment=-tau_step)
+
+
+        # Create block and append to created_blocks list
+        timedeer_block = PulseBlock(name=name)
+
+        timedeer_block.append(nv_pihalf_element)
+        if two_pi_deer:
+            for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                p1_pi_element = self._get_mw_element(length=p1_period/2,
+                                                     increment=0,
+                                                     amp=self.microwave_amplitude / p1_pfac,
+                                                     freq=p1_freq,
+                                                     phase=0)
+                timedeer_block.append(p1_pi_element)
+            timedeer_block.append(tau_hahn_element)
+        else:
+            timedeer_block.append(tau_hahn_element)
+        timedeer_block.append(nv_pi_element)
+
+        timedeer_block.append(tau2_element)
+        for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+            p1_pi_element = self._get_mw_element(length=p1_period/ 2,
+                                                 increment=0,
+                                                 amp=self.microwave_amplitude / p1_pfac,
+                                                 freq=p1_freq,
+                                                 phase=0)
+            timedeer_block.append(p1_pi_element)
+
+        timedeer_block.append(tau1_element)
+        timedeer_block.append(nv_pihalf_read_element)
+        if end_laser:
+            timedeer_block.append(laser_element)
+            timedeer_block.append(delay_element)
+            timedeer_block.append(waiting_element)
+
+        if alternating:
+            timedeer_block.append(nv_pihalf_element)
+            if two_pi_deer:
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                    p1_pi_element = self._get_mw_element(length=p1_period/ 2,
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / p1_pfac,
+                                                         freq=p1_freq,
+                                                         phase=0)
+                    timedeer_block.append(p1_pi_element)
+                timedeer_block.append(tau_hahn_element)
+            else:
+                timedeer_block.append(tau_hahn_element)
+            timedeer_block.append(nv_pi_element)
+
+            timedeer_block.append(tau2_element)
+            for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                p1_pi_element = self._get_mw_element(length=p1_period/ 2,
+                                                     increment=0,
+                                                     amp=self.microwave_amplitude / p1_pfac,
+                                                     freq=p1_freq,
+                                                     phase=0)
+                timedeer_block.append(p1_pi_element)
+
+            timedeer_block.append(tau1_element)
+            timedeer_block.append(nv_pihalf_read2_element)
+            if end_laser:
+                timedeer_block.append(laser_element)
+                timedeer_block.append(delay_element)
+                timedeer_block.append(waiting_element)
+
+        created_blocks.append(timedeer_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((timedeer_block.name, num_of_points - 1))
+
+        # Create and append sync trigger block if needed
+        self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_points if alternating else num_of_points
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = list()
+        block_ensemble.measurement_information['controlled_variable'] = tau_array
+        block_ensemble.measurement_information['units'] = ('s', '')
+        block_ensemble.measurement_information['labels'] = ('Tau', 'Signal')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        # append ensemble to created ensembles
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+    def generate_pulsepol_timedeer(self, name='pulsepol_timedeer', order = 1, pol_steps = 1,
+                                 nv_freq=1290.0e6, nv_pfactor=1, nv_rabi_period=30e-9,
+                                 p1_frequencies=0, p1_pfactors=0, p1_rabi_periods=0,
+                                 tau_spacing = 1e-6,
+                                 tau_start = 5e-9, num_of_steps = 50, step_size = 0.1e-6,
+                                 he_tau = 1e-6, read_phases_standard='0,0', read_phases_alt='90,90',
+                                 alternating=False, two_pi_deer = False, add_pi_flip = False,
+                                 turnoff_pol=False, parallel_p1_pulse=True, add_alt_pi = False):
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+        if p1_frequencies is 0:
+            p1_frequencies = [2870.0e6]
+        if p1_pfactors is 0:
+            p1_pfactors = [1]
+        if p1_rabi_periods is 0:
+            p1_rabi_periods = [90e-9]
+
+        tau_array = tau_start + np.arange(num_of_steps) * step_size
+        if (he_tau-tau_array[-1]) < 0:
+            self.log.error("P1 pi pulse out of bounds! Reduce stepsize or number of steps otherwise it overlaps with other pulses!")
+
+        if not turnoff_pol:
+            idx_of_lasers = list(range((pol_steps + 1) * (2 * num_of_steps if alternating else num_of_steps)))
+            readout_lasers = [i for i in range(pol_steps, len(idx_of_lasers), pol_steps + 1)]
+            idx_ignored_lasers = [i for i in idx_of_lasers if i not in readout_lasers]
+        else:
+            idx_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+            readout_lasers = 2 * num_of_steps if alternating else num_of_steps
+            idx_ignored_lasers = []
+
+        # create the elements
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        # create blocks
+        mega_block = PulseBlock(name=name)
+
+        if not turnoff_pol:
+            for n in range(pol_steps):
+                pulsepol_element, _, _ = self.generate_pulsepol(order=order,
+                                                                nv_freq=nv_freq, nv_pfactor=nv_pfactor,
+                                                                nv_rabi_period=nv_rabi_period,
+                                                                p1_frequencies=p1_frequencies, p1_pfactors=p1_pfactors,
+                                                                p1_rabi_periods=p1_rabi_periods,
+                                                                tau_start=tau_spacing, tau_step=0, num_of_steps=1,
+                                                                alternating=False, read_phase_degree='0, 0',
+                                                                end_laser=False)
+                pulsepol_element = pulsepol_element[0]
+                mega_block.extend(pulsepol_element)
+
+                mega_block.append(laser_element)
+                mega_block.append(delay_element)
+                mega_block.append(waiting_element)
+
+        if add_pi_flip:
+            for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                     increment=0,
+                                                     amp=self.microwave_amplitude / p1_pfac,
+                                                     freq=p1_freq,
+                                                     phase=0)
+                mega_block.append(p1_pi_element)
+
+
+        deer_element, _, _ = self.generate_timedeer_multidrive(nv_freq=nv_freq,
+                       nv_pfactor=nv_pfactor, nv_rabi_period=nv_rabi_period,
+                       p1_frequencies=p1_frequencies, p1_pfactors=p1_pfactors, p1_rabi_periods=p1_rabi_periods,
+                       tau_start=tau_start, tau_step=step_size, num_of_points=1,
+                       he_tau=he_tau, read_phase_degree=read_phases_standard,
+                       two_pi_deer=two_pi_deer, end_laser=True, parallel_p1_pulse=parallel_p1_pulse,
+                       alternating=False)
+        deer_element = deer_element[0]
+        mega_block.extend(deer_element)
+
+        if alternating:
+            if not turnoff_pol:
+                for n in range(pol_steps):
+                    pulsepol_element, _, _ = self.generate_pulsepol(order=order,
+                                                                    nv_freq=nv_freq, nv_pfactor=nv_pfactor,
+                                                                    nv_rabi_period=nv_rabi_period,
+                                                                    p1_frequencies=p1_frequencies,
+                                                                    p1_pfactors=p1_pfactors,
+                                                                    p1_rabi_periods=p1_rabi_periods,
+                                                                    tau_start=tau_spacing, tau_step=0, num_of_steps=1,
+                                                                    alternating=False, read_phase_degree='0, 0',
+                                                                    end_laser=False)
+                    pulsepol_element = pulsepol_element[0]
+                    mega_block.extend(pulsepol_element)
+
+                    mega_block.append(laser_element)
+                    mega_block.append(delay_element)
+                    mega_block.append(waiting_element)
+
+            if add_pi_flip:
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                    p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / p1_pfac,
+                                                         freq=p1_freq,
+                                                         phase=0)
+                    mega_block.append(p1_pi_element)
+
+            if add_alt_pi:
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                    p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / p1_pfac,
+                                                         freq=p1_freq,
+                                                         phase=0)
+                    mega_block.append(p1_pi_element)
+
+            deer_element, _, _ = self.generate_timedeer_multidrive(nv_freq=nv_freq,
+                                                                   nv_pfactor=nv_pfactor, nv_rabi_period=nv_rabi_period,
+                                                                   p1_frequencies=p1_frequencies,
+                                                                   p1_pfactors=p1_pfactors,
+                                                                   p1_rabi_periods=p1_rabi_periods,
+                                                                   tau_start=tau_start, tau_step=step_size,
+                                                                   num_of_points=1, he_tau=he_tau,
+                                                                   read_phase_degree=read_phases_alt,
+                                                                   two_pi_deer=two_pi_deer, end_laser=True,
+                                                                   alternating=False, parallel_p1_pulse=parallel_p1_pulse)
+            deer_element = deer_element[0]
+            mega_block.extend(deer_element)
+
+        created_blocks.append(mega_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((mega_block.name, num_of_steps - 1))
+
+        # Create and append sync trigger block if needed
+        self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+        number_of_lasers += len(idx_ignored_lasers)
+        self.log.debug(f"Ignoring laser pulses with idx= {idx_ignored_lasers} // Laser number = {number_of_lasers}")
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = idx_ignored_lasers
+        block_ensemble.measurement_information['controlled_variable'] = tau_array
+        block_ensemble.measurement_information['labels'] = ('tau1', '')
+        block_ensemble.measurement_information['units'] = ('s', '')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+
+    def generate_pulsepol_timedeer_truerabi(self, name='pulsepol_timedeer_truerabi', order = 1, pol_steps = 1,
+                                 nv_freq=1290.0e6, nv_pfactor=1, nv_rabi_period=30e-9,
+                                 p1_frequencies=0, p1_pfactors=0, p1_rabi_periods=0,
+                                 true_p1_rabi_periods = 0, p1_pfactors_amplitude = 0,
+                                 tau_spacing = 1e-6,
+                                 tau_start = 5e-9, num_of_steps = 50, step_size = 0.1e-6,
+                                 he_tau = 1e-6, read_phases_standard='0,0', read_phases_alt='90,90',
+                                 alternating=False, two_pi_deer = False, add_pi_flip=False,
+                                 turnoff_pol=False, add_alt_pi = False):
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+        if p1_frequencies is 0:
+            p1_frequencies = [2870.0e6]
+        if p1_pfactors is 0:
+            p1_pfactors = [1]
+        if p1_rabi_periods is 0:
+            p1_rabi_periods = [90e-9]
+        if p1_pfactors_amplitude is 0:
+            p1_pfactors_amplitude = [1]
+        if true_p1_rabi_periods is 0:
+            true_p1_rabi_periods = [90e-9]
+
+        tau_array = tau_start + np.arange(num_of_steps) * step_size
+        if (he_tau-tau_array[-1]) < 0:
+            self.log.error("P1 pi pulse out of bounds! Reduce stepsize or number of steps otherwise it overlaps with other pulses!")
+
+        if not turnoff_pol:
+            idx_of_lasers = list(range((pol_steps + 1) * (2 * num_of_steps if alternating else num_of_steps)))
+            readout_lasers = [i for i in range(pol_steps, len(idx_of_lasers), pol_steps + 1)]
+            idx_ignored_lasers = [i for i in idx_of_lasers if i not in readout_lasers]
+        else:
+            idx_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+            readout_lasers = 2 * num_of_steps if alternating else num_of_steps
+            idx_ignored_lasers = []
+
+        # create the elements
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        # create blocks
+        mega_block = PulseBlock(name=name)
+
+        if not turnoff_pol:
+            for n in range(pol_steps):
+                pulsepol_element, _, _ = self.generate_pulsepol(order=order,
+                                                                nv_freq=nv_freq, nv_pfactor=nv_pfactor,
+                                                                nv_rabi_period=nv_rabi_period,
+                                                                p1_frequencies=p1_frequencies, p1_pfactors=p1_pfactors,
+                                                                p1_rabi_periods=p1_rabi_periods,
+                                                                tau_start=tau_spacing, tau_step=0, num_of_steps=1,
+                                                                alternating=False, read_phase_degree='0, 0',
+                                                                end_laser=False)
+                pulsepol_element = pulsepol_element[0]
+                mega_block.extend(pulsepol_element)
+
+                mega_block.append(laser_element)
+                mega_block.append(delay_element)
+                mega_block.append(waiting_element)
+
+        if add_pi_flip:
+            for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors_amplitude, true_p1_rabi_periods):
+                p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                     increment=0,
+                                                     amp=self.microwave_amplitude / p1_pfac,
+                                                     freq=p1_freq,
+                                                     phase=0)
+                mega_block.append(p1_pi_element)
+
+
+        deer_element, _, _ = self.generate_timedeer_multidrive_truerabi(nv_freq=nv_freq,
+                       nv_pfactor=nv_pfactor, nv_rabi_period=nv_rabi_period,
+                       p1_frequencies=p1_frequencies, p1_pfactors=p1_pfactors_amplitude, p1_rabi_periods=true_p1_rabi_periods,
+                       tau_start=tau_start, tau_step=step_size, num_of_points=1,
+                       he_tau=he_tau, read_phase_degree=read_phases_standard,
+                       two_pi_deer=two_pi_deer, end_laser=True, alternating=False)
+        deer_element = deer_element[0]
+        mega_block.extend(deer_element)
+
+        if alternating:
+            if not turnoff_pol:
+                for n in range(pol_steps):
+                    pulsepol_element, _, _ = self.generate_pulsepol(order=order,
+                                                                    nv_freq=nv_freq, nv_pfactor=nv_pfactor,
+                                                                    nv_rabi_period=nv_rabi_period,
+                                                                    p1_frequencies=p1_frequencies,
+                                                                    p1_pfactors=p1_pfactors,
+                                                                    p1_rabi_periods=p1_rabi_periods,
+                                                                    tau_start=tau_spacing, tau_step=0, num_of_steps=1,
+                                                                    alternating=False, read_phase_degree='0, 0',
+                                                                    end_laser=False)
+                    pulsepol_element = pulsepol_element[0]
+                    mega_block.extend(pulsepol_element)
+
+                    mega_block.append(laser_element)
+                    mega_block.append(delay_element)
+                    mega_block.append(waiting_element)
+
+            if add_pi_flip:
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors_amplitude, true_p1_rabi_periods):
+                    p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / p1_pfac,
+                                                         freq=p1_freq,
+                                                         phase=0)
+                    mega_block.append(p1_pi_element)
+
+            if add_alt_pi:
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors_amplitude, true_p1_rabi_periods):
+                    p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / p1_pfac,
+                                                         freq=p1_freq,
+                                                         phase=0)
+                    mega_block.append(p1_pi_element)
+
+            deer_element, _, _ = self.generate_timedeer_multidrive_truerabi(nv_freq=nv_freq,
+                                                                            nv_pfactor=nv_pfactor,
+                                                                            nv_rabi_period=nv_rabi_period,
+                                                                            p1_frequencies=p1_frequencies,
+                                                                            p1_pfactors=p1_pfactors_amplitude,
+                                                                            p1_rabi_periods=true_p1_rabi_periods,
+                                                                            tau_start=tau_start, tau_step=step_size,
+                                                                            num_of_points=1,
+                                                                            he_tau=he_tau,
+                                                                            read_phase_degree=read_phases_alt,
+                                                                            two_pi_deer=two_pi_deer, end_laser=True,
+                                                                            alternating=False)
+            deer_element = deer_element[0]
+            mega_block.extend(deer_element)
+
+        created_blocks.append(mega_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((mega_block.name, num_of_steps - 1))
+
+        # Create and append sync trigger block if needed
+        self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+        number_of_lasers += len(idx_ignored_lasers)
+        self.log.debug(f"Ignoring laser pulses with idx= {idx_ignored_lasers} // Laser number = {number_of_lasers}")
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = idx_ignored_lasers
+        block_ensemble.measurement_information['controlled_variable'] = tau_array
+        block_ensemble.measurement_information['labels'] = ('tau1', '')
+        block_ensemble.measurement_information['units'] = ('s', '')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+
+    def generate_pulsepol_deerswap(self, name='pulsepol_deerswap', order = 1, pol_steps = 1,
+                                 nv_freq=1290.0e6, nv_pfactor=1, nv_rabi_period=30e-9,
+                                 p1_frequencies=0, p1_pfactors=0, p1_rabi_periods=0,
+                                 tau_spacing = 1e-6, rabi_pscale = 1,
+                                 deer_p1_pfactors=0, deer_p1_periods=0,
+                                 tau_rabi_start = 5e-9, num_of_steps = 50, step_size = 0.1e-6,
+                                 deer_he_tau = 1e-6, timedeer_tau=1e-9,
+                                 alternating=False, read_phases_standard='0,0', read_phases_alt='90,90',
+                                 two_pi_deer = False, add_pi_flip = False, add_alt_pi = False,
+                                 turnoff_pol=False, add_rabi=True, add_deer=False, parallel_rabi=True, parallel_deer=True):
+
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+        if p1_frequencies is 0:
+            p1_frequencies = [2870.0e6]
+        if p1_pfactors is 0:
+            p1_pfactors = [1]
+        if p1_rabi_periods is 0:
+            p1_rabi_periods = [90e-9]
+        if deer_p1_pfactors is 0:
+            deer_p1_pfactors = [1]
+        if deer_p1_periods is 0:
+            deer_p1_periods = [90e-9]
+
+        tau_array = tau_rabi_start + np.arange(num_of_steps) * step_size
+
+        if not turnoff_pol:
+            idx_of_lasers = list(range((pol_steps + 1) * (2 * num_of_steps if alternating else num_of_steps)))
+            readout_lasers = [i for i in range(pol_steps, len(idx_of_lasers), pol_steps + 1)]
+            idx_ignored_lasers = [i for i in idx_of_lasers if i not in readout_lasers]
+        else:
+            idx_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+            readout_lasers = 2 * num_of_steps if alternating else num_of_steps
+            idx_ignored_lasers = []
+
+        # create the elements
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        rabi_power_scalings = [rabi_pscale]*len(p1_pfactors)
+
+        #create blocks
+        mega_block = PulseBlock(name=name)
+
+        if not turnoff_pol:
+            for n in range(pol_steps):
+                pulsepol_element, _ , _ = self.generate_pulsepol(order = order,
+                              nv_freq=nv_freq, nv_pfactor=nv_pfactor, nv_rabi_period=nv_rabi_period,
+                              p1_frequencies=p1_frequencies, p1_pfactors=p1_pfactors, p1_rabi_periods=p1_rabi_periods,
+                              tau_start=tau_spacing, tau_step=0, num_of_steps=1,
+                              alternating=False, read_phase_degree='0, 0', end_laser=False)
+                pulsepol_element = pulsepol_element[0]
+                mega_block.extend(pulsepol_element)
+
+
+                mega_block.append(laser_element)
+                mega_block.append(delay_element)
+                mega_block.append(waiting_element)
+
+        if add_pi_flip:
+            for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                     increment=0,
+                                                     amp=self.microwave_amplitude / p1_pfac,
+                                                     freq=p1_freq,
+                                                     phase=0)
+                mega_block.append(p1_pi_element)
+
+        # RABI step
+        if add_rabi:
+            rabi_element, _, _ =  self.generate_rabi_sam(tau_start=tau_rabi_start, tau_step=step_size,
+                                                         num_of_points=1, p_scale = 1, frequency=nv_freq,
+                                                         multidrive=True, freqs=p1_frequencies, p_facs=rabi_power_scalings,
+                                                         alternating=False, read_phase_degree='0, 0',
+                                                         parallel_pulse = parallel_rabi, end_laser=False)
+            rabi_element = rabi_element[0]
+            mega_block.extend(rabi_element)
+
+        # DEER step
+        if add_deer:
+            deer_element, _, _ = self.generate_timedeer_multidrive_truerabi(nv_freq=nv_freq,
+                                                                            nv_pfactor=nv_pfactor,
+                                                                            nv_rabi_period=nv_rabi_period,
+                                                                            p1_frequencies=p1_frequencies,
+                                                                            p1_pfactors=deer_p1_pfactors,
+                                                                            p1_rabi_periods=deer_p1_periods,
+                                                                            tau_start=timedeer_tau, tau_step=0,
+                                                                            num_of_points=1,
+                                                                            he_tau=deer_he_tau,
+                                                                            read_phase_degree=read_phases_standard,
+                                                                            two_pi_deer=two_pi_deer, end_laser=True,
+                                                                            alternating=False)
+            deer_element = deer_element[0]
+            mega_block.extend(deer_element)
+
+        if alternating:
+            if not turnoff_pol:
+                for n in range(pol_steps):
+                    pulsepol_element, _, _ = self.generate_pulsepol(order=order,
+                                                                    nv_freq=nv_freq, nv_pfactor=nv_pfactor,
+                                                                    nv_rabi_period=nv_rabi_period,
+                                                                    p1_frequencies=p1_frequencies,
+                                                                    p1_pfactors=p1_pfactors,
+                                                                    p1_rabi_periods=p1_rabi_periods,
+                                                                    tau_start=tau_spacing, tau_step=0, num_of_steps=1,
+                                                                    alternating=False, read_phase_degree='0, 0',
+                                                                    end_laser=False)
+                    pulsepol_element = pulsepol_element[0]
+                    mega_block.extend(pulsepol_element)
+
+                    mega_block.append(laser_element)
+                    mega_block.append(delay_element)
+                    mega_block.append(waiting_element)
+
+            if add_pi_flip:
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                    p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / p1_pfac,
+                                                         freq=p1_freq,
+                                                         phase=0)
+                    mega_block.append(p1_pi_element)
+
+            if add_alt_pi:
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, deer_p1_pfactors, deer_p1_periods):
+                    p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / p1_pfac,
+                                                         freq=p1_freq,
+                                                         phase=0)
+                    mega_block.append(p1_pi_element)
+
+            # RABI step
+            if add_rabi:
+                rabi_element, _, _ = self.generate_rabi_sam(tau_start=tau_rabi_start, tau_step=step_size,
+                                                            num_of_points=1, p_scale=1, frequency=nv_freq,
+                                                            multidrive=True, freqs=p1_frequencies, p_facs=rabi_power_scalings,
+                                                            alternating=False, read_phase_degree='0, 0',
+                                                            parallel_pulse=parallel_rabi, end_laser=False)
+                rabi_element = rabi_element[0]
+                mega_block.extend(rabi_element)
+
+            # DEER step
+            if add_deer:
+                deer_element, _, _ = self.generate_timedeer_multidrive_truerabi(nv_freq=nv_freq,
+                                                                                nv_pfactor=nv_pfactor,
+                                                                                nv_rabi_period=nv_rabi_period,
+                                                                                p1_frequencies=p1_frequencies,
+                                                                                p1_pfactors=deer_p1_pfactors,
+                                                                                p1_rabi_periods=deer_p1_periods,
+                                                                                tau_start=timedeer_tau, tau_step=0,
+                                                                                num_of_points=1,
+                                                                                he_tau=deer_he_tau,
+                                                                                read_phase_degree=read_phases_alt,
+                                                                                two_pi_deer=two_pi_deer, end_laser=True,
+                                                                                alternating=False)
+                deer_element = deer_element[0]
+                mega_block.extend(deer_element)
+
+
+        created_blocks.append(mega_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((mega_block.name, num_of_steps - 1))
+
+        # Create and append sync trigger block if needed
+        self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+        number_of_lasers += len(idx_ignored_lasers)
+        self.log.debug(f"Ignoring laser pulses with idx= {idx_ignored_lasers} // Laser number = {number_of_lasers}")
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = idx_ignored_lasers
+        block_ensemble.measurement_information['controlled_variable'] = tau_array
+        block_ensemble.measurement_information['labels'] = ('tau rabi', '')
+        block_ensemble.measurement_information['units'] = ('s', '')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+    def generate_nv2p1_pulsepol_timedeer(self, name='nv2p1_pulsepol_timedeer', order = 1, pol_steps = 1,
+                                 nv1_freq=1290.0e6, nv1_pfactor=1, nv1_rabi_period=30e-9,
+                                 nv2_freq=1290.0e6, nv2_pfactor=1, nv2_rabi_period=30e-9,
+                                 p1_frequencies=0, p1_pfactors=0, p1_rabi_periods=0,
+                                 true_p1_rabi_periods=0, p1_pfactors_amplitude=0,
+                                 tau_spacing = 1e-6,
+                                 tau_start_p1=5e-9, he_tau_p1=1e-6,
+                                 tau_start_nv2 = 5e-9, num_of_steps_nv2 = 50, step_size_nv2 = 0.1e-6, he_tau_nv2 = 1e-6,
+                                 read_phases_standard_p1='0,0', read_phases_alt_p1='90,90',
+                                 read_phases_standard_nv2='0,0', read_phases_alt_nv2='90,90',
+                                 alternating=False, two_pi_deer_p1 = False, two_pi_deer_nv2 = False,
+                                 add_pi_flip = False, add_alt_pi=False,
+                                 turnoff_pol=False, add_p1_deer = True, add_nv2_deer=True):
+
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+        if p1_frequencies is 0:
+            p1_frequencies = [2870.0e6]
+        if p1_pfactors is 0:
+            p1_pfactors = [1]
+        if p1_rabi_periods is 0:
+            p1_rabi_periods = [90e-9]
+        if p1_pfactors_amplitude is 0:
+            p1_pfactors_amplitude = [1]
+        if true_p1_rabi_periods is 0:
+            true_p1_rabi_periods = [90e-9]
+
+        tau_array = tau_start_nv2 + np.arange(num_of_steps_nv2) * step_size_nv2
+
+        if not turnoff_pol:
+            idx_of_lasers = list(range((pol_steps + 1) * (2 * num_of_steps if alternating else num_of_steps)))
+            readout_lasers = [i for i in range(pol_steps, len(idx_of_lasers), pol_steps + 1)]
+            idx_ignored_lasers = [i for i in idx_of_lasers if i not in readout_lasers]
+        else:
+            idx_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+            readout_lasers = 2 * num_of_steps if alternating else num_of_steps
+            idx_ignored_lasers = []
+
+        # create the elements
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        # create blocks
+        mega_block = PulseBlock(name=name)
+
+        if not turnoff_pol:
+            for n in range(pol_steps):
+                pulsepol_element, _, _ = self.generate_pulsepol(order=order,
+                                                                nv_freq=nv_freq, nv_pfactor=nv_pfactor,
+                                                                nv_rabi_period=nv_rabi_period,
+                                                                p1_frequencies=p1_frequencies, p1_pfactors=p1_pfactors,
+                                                                p1_rabi_periods=p1_rabi_periods,
+                                                                tau_start=tau_spacing, tau_step=0, num_of_steps=1,
+                                                                alternating=False, read_phase_degree='0, 0',
+                                                                end_laser=False)
+                pulsepol_element = pulsepol_element[0]
+                mega_block.extend(pulsepol_element)
+
+                mega_block.append(laser_element)
+                mega_block.append(delay_element)
+                mega_block.append(waiting_element)
+
+        if add_pi_flip:
+            for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors_amplitude, true_p1_rabi_periods):
+                p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                     increment=0,
+                                                     amp=self.microwave_amplitude / p1_pfac,
+                                                     freq=p1_freq,
+                                                     phase=0)
+                mega_block.append(p1_pi_element)
+
+        if add_p1_deer:
+            deer_P1_element, _, _ = self.generate_timedeer_multidrive_truerabi(nv_freq=nv_freq,
+                                                    nv_pfactor=nv_pfactor, nv_rabi_period=nv_rabi_period,
+                                                    p1_frequencies=p1_frequencies, p1_pfactors=p1_pfactors_amplitude,
+                                                    p1_rabi_periods=true_p1_rabi_periods,
+                                                    tau_start=tau_start_p1, tau_step=0,
+                                                    num_of_points=1, he_tau=he_tau_p1,
+                                                    read_phase_degree=read_phases_standard_p1,
+                                                    two_pi_deer=two_pi_deer_p1, alternating=False,
+                                                    end_laser=False if add_nv2_deer else True)
+            deer_P1_element = deer_P1_element[0]
+            mega_block.extend(deer_P1_element)
+
+        if add_nv2_deer:
+            deer_nv2_element, _, _ = self.generate_timedeer_multidrive_truerabi(nv_freq=nv2_freq,
+                                                       nv_pfactor=nv2_pfactor, nv_rabi_period=nv2_rabi_period,
+                                                       p1_frequencies=nv1_freq, p1_pfactors=nv1_pfactor,
+                                                       p1_rabi_periods=nv1_rabi_period,
+                                                       tau_start=tau_start_nv2, tau_step=step_size_nv2,
+                                                       num_of_points=num_of_steps_nv2, he_tau=he_tau_nv2,
+                                                       read_phase_degree=read_phases_standard_nv2,
+                                                       two_pi_deer=two_pi_deer_nv2, end_laser=True, alternating=False)
+            deer_nv2_element = deer_nv2_element[0]
+            mega_block.extend(deer_nv2_element)
+
+        if alternating:
+            if not turnoff_pol:
+                for n in range(pol_steps):
+                    pulsepol_element, _, _ = self.generate_pulsepol(order=order,
+                                                                    nv_freq=nv_freq, nv_pfactor=nv_pfactor,
+                                                                    nv_rabi_period=nv_rabi_period,
+                                                                    p1_frequencies=p1_frequencies,
+                                                                    p1_pfactors=p1_pfactors,
+                                                                    p1_rabi_periods=p1_rabi_periods,
+                                                                    tau_start=tau_spacing, tau_step=0, num_of_steps=1,
+                                                                    alternating=False, read_phase_degree='0, 0',
+                                                                    end_laser=False)
+                    pulsepol_element = pulsepol_element[0]
+                    mega_block.extend(pulsepol_element)
+
+                    mega_block.append(laser_element)
+                    mega_block.append(delay_element)
+                    mega_block.append(waiting_element)
+
+            if add_pi_flip:
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors_amplitude, true_p1_rabi_periods):
+                    p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / p1_pfac,
+                                                         freq=p1_freq,
+                                                         phase=0)
+                    mega_block.append(p1_pi_element)
+
+            if add_alt_pi:
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors_amplitude, true_p1_rabi_periods):
+                    p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / p1_pfac,
+                                                         freq=p1_freq,
+                                                         phase=0)
+                    mega_block.append(p1_pi_element)
+
+            if add_p1_deer:
+                deer_P1_element, _, _ = self.generate_timedeer_multidrive_truerabi(nv_freq=nv_freq,
+                                                    nv_pfactor=nv_pfactor, nv_rabi_period=nv_rabi_period,
+                                                    p1_frequencies=p1_frequencies, p1_pfactors=p1_pfactors_amplitude,
+                                                    p1_rabi_periods=true_p1_rabi_periods,
+                                                    tau_start=tau_start_p1, tau_step=0,
+                                                    num_of_points=1, he_tau=he_tau_p1,
+                                                    read_phase_degree=read_phases_alt_p1,
+                                                    two_pi_deer=two_pi_deer_p1, alternating=False,
+                                                    end_laser=False if add_nv2_deer else True)
+
+                deer_P1_element = deer_P1_element[0]
+                mega_block.extend(deer_P1_element)
+
+            if add_nv2_deer:
+                deer_nv2_element, _, _ = self.generate_timedeer_multidrive_truerabi(nv_freq=nv2_freq,
+                                                    nv_pfactor=nv2_pfactor, nv_rabi_period=nv2_rabi_period,
+                                                    p1_frequencies=nv1_freq, p1_pfactors=nv1_pfactor,
+                                                    p1_rabi_periods=nv1_rabi_period,
+                                                    tau_start=tau_start_nv2, tau_step=step_size_nv2,
+                                                    num_of_points=num_of_steps_nv2, he_tau=he_tau_nv2,
+                                                    read_phase_degree=read_phases_alt_nv2,
+                                                    two_pi_deer=two_pi_deer_nv2,
+                                                    end_laser=True, alternating=False)
+                deer_nv2_element = deer_nv2_element[0]
+                mega_block.extend(deer_nv2_element)
+
+
+        created_blocks.append(mega_block)
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((mega_block.name, num_of_steps - 1))
+
+        # Create and append sync trigger block if needed
+        self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_steps_nv2 if alternating else num_of_steps_nv2
+        number_of_lasers += len(idx_ignored_lasers)
+        self.log.debug(f"Ignoring laser pulses with idx= {idx_ignored_lasers} // Laser number = {number_of_lasers}")
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = idx_ignored_lasers
+        block_ensemble.measurement_information['controlled_variable'] = tau_array
+        block_ensemble.measurement_information['labels'] = ('tau1 (NV2)', '')
+        block_ensemble.measurement_information['units'] = ('s', '')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+    def generate_nv2p1_PPRD(self, name='nv2p1_PPRD', order = 1, pol_steps = 1,
+                                 nv1_freq=1290.0e6, nv1_pfactor=1, nv1_rabi_period=30e-9,
+                                 nv2_freq=1290.0e6, nv2_pfactor=1, nv2_rabi_period=30e-9,
+                                 p1_frequencies=0, p1_pfactors=0, p1_rabi_periods=0,
+                                 true_p1_rabi_periods=0, p1_pfactors_amplitude=0,
+                                 tau_spacing = 1e-6,
+                                 tau_rabi_start=5e-9, num_of_steps=50, step_size=0.1e-6,
+                                 tau_start_p1=5e-9, he_tau_p1=1e-6, tau_start_nv2 = 5e-9, he_tau_nv2 = 1e-6,
+                                 read_phases_standard_p1='0,0', read_phases_alt_p1='90,90',
+                                 read_phases_standard_nv2='0,0', read_phases_alt_nv2='90,90',
+                                 alternating=False, two_pi_deer_p1 = False, two_pi_deer_nv2 = False,
+                                 add_pi_flip = False, add_alt_pi=False, parallel_rabi=False,
+                                 turnoff_pol=False, add_rabi=True, add_p1_deer = True, add_nv2_deer=True):
+
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+        if p1_frequencies is 0:
+            p1_frequencies = [2870.0e6]
+        if p1_pfactors is 0:
+            p1_pfactors = [1]
+        if p1_rabi_periods is 0:
+            p1_rabi_periods = [90e-9]
+        if p1_pfactors_amplitude is 0:
+            p1_pfactors_amplitude = [1]
+        if true_p1_rabi_periods is 0:
+            true_p1_rabi_periods = [90e-9]
+
+        tau_array = tau_rabi_start + np.arange(num_of_steps) * step_size
+
+        if not turnoff_pol:
+            idx_of_lasers = list(range((pol_steps + 1) * (2 * num_of_steps if alternating else num_of_steps)))
+            readout_lasers = [i for i in range(pol_steps, len(idx_of_lasers), pol_steps + 1)]
+            idx_ignored_lasers = [i for i in idx_of_lasers if i not in readout_lasers]
+        else:
+            idx_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+            readout_lasers = 2 * num_of_steps if alternating else num_of_steps
+            idx_ignored_lasers = []
+
+        # create the elements
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        # create blocks
+        mega_block = PulseBlock(name=name)
+
+        # POLARIZATION
+        if not turnoff_pol:
+            for n in range(pol_steps):
+                pulsepol_element, _, _ = self.generate_pulsepol(order=order,
+                                                                nv_freq=nv_freq, nv_pfactor=nv_pfactor,
+                                                                nv_rabi_period=nv_rabi_period,
+                                                                p1_frequencies=p1_frequencies, p1_pfactors=p1_pfactors,
+                                                                p1_rabi_periods=p1_rabi_periods,
+                                                                tau_start=tau_spacing, tau_step=0, num_of_steps=1,
+                                                                alternating=False, read_phase_degree='0, 0',
+                                                                end_laser=False)
+                pulsepol_element = pulsepol_element[0]
+                mega_block.extend(pulsepol_element)
+
+                mega_block.append(laser_element)
+                mega_block.append(delay_element)
+                mega_block.append(waiting_element)
+
+        if add_pi_flip:
+            for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors_amplitude, true_p1_rabi_periods):
+                p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                     increment=0,
+                                                     amp=self.microwave_amplitude / p1_pfac,
+                                                     freq=p1_freq,
+                                                     phase=0)
+                mega_block.append(p1_pi_element)
+        # RABI
+        if add_rabi:
+            rabi_element, _, _ =  self.generate_rabi_sam(tau_start=tau_rabi_start, tau_step=step_size,
+                                                         num_of_points=1, p_scale = 1, frequency=nv_freq,
+                                                         multidrive=True, freqs=p1_frequencies, p_facs=rabi_power_scalings,
+                                                         alternating=False, read_phase_degree='0, 0',
+                                                         parallel_pulse = parallel_rabi, end_laser=False)
+            rabi_element = rabi_element[0]
+            mega_block.extend(rabi_element)
+        # DEER ON P1
+        if add_p1_deer:
+            deer_P1_element, _, _ = self.generate_timedeer_multidrive_truerabi(nv_freq=nv_freq,
+                                                    nv_pfactor=nv_pfactor, nv_rabi_period=nv_rabi_period,
+                                                    p1_frequencies=p1_frequencies, p1_pfactors=p1_pfactors_amplitude,
+                                                    p1_rabi_periods=true_p1_rabi_periods,
+                                                    tau_start=tau_start_p1, tau_step=0,
+                                                    num_of_points=1, he_tau=he_tau_p1,
+                                                    read_phase_degree=read_phases_standard_p1,
+                                                    two_pi_deer=two_pi_deer_p1, alternating=False,
+                                                    end_laser=False if add_nv2_deer else True)
+            deer_P1_element = deer_P1_element[0]
+            mega_block.extend(deer_P1_element)
+        # DEER ON NV1 WITH NV2
+        if add_nv2_deer:
+            deer_nv2_element, _, _ = self.generate_timedeer_multidrive_truerabi(nv_freq=nv2_freq,
+                                                       nv_pfactor=nv2_pfactor, nv_rabi_period=nv2_rabi_period,
+                                                       p1_frequencies=nv1_freq, p1_pfactors=nv1_pfactor,
+                                                       p1_rabi_periods=nv1_rabi_period,
+                                                       tau_start=tau_start_nv2, tau_step=0,
+                                                       num_of_points=1, he_tau=he_tau_nv2,
+                                                       read_phase_degree=read_phases_standard_nv2,
+                                                       two_pi_deer=two_pi_deer_nv2, end_laser=True, alternating=False)
+            deer_nv2_element = deer_nv2_element[0]
+            mega_block.extend(deer_nv2_element)
+
+        if alternating:
+            # POLARIZATION
+            if not turnoff_pol:
+                for n in range(pol_steps):
+                    pulsepol_element, _, _ = self.generate_pulsepol(order=order,
+                                                                    nv_freq=nv_freq, nv_pfactor=nv_pfactor,
+                                                                    nv_rabi_period=nv_rabi_period,
+                                                                    p1_frequencies=p1_frequencies,
+                                                                    p1_pfactors=p1_pfactors,
+                                                                    p1_rabi_periods=p1_rabi_periods,
+                                                                    tau_start=tau_spacing, tau_step=0, num_of_steps=1,
+                                                                    alternating=False, read_phase_degree='0, 0',
+                                                                    end_laser=False)
+                    pulsepol_element = pulsepol_element[0]
+                    mega_block.extend(pulsepol_element)
+
+                    mega_block.append(laser_element)
+                    mega_block.append(delay_element)
+                    mega_block.append(waiting_element)
+
+            if add_pi_flip:
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors_amplitude, true_p1_rabi_periods):
+                    p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / p1_pfac,
+                                                         freq=p1_freq,
+                                                         phase=0)
+                    mega_block.append(p1_pi_element)
+            # P1 pi pulse on alternating trace
+            if add_alt_pi:
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors_amplitude, true_p1_rabi_periods):
+                    p1_pi_element = self._get_mw_element(length=p1_period / 2,
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / p1_pfac,
+                                                         freq=p1_freq,
+                                                         phase=0)
+                    mega_block.append(p1_pi_element)
+            # RABI
+            if add_rabi:
+                rabi_element, _, _ = self.generate_rabi_sam(tau_start=tau_rabi_start, tau_step=step_size,
+                                                            num_of_points=1, p_scale=1, frequency=nv_freq,
+                                                            multidrive=True, freqs=p1_frequencies,
+                                                            p_facs=rabi_power_scalings,
+                                                            alternating=False, read_phase_degree='0, 0',
+                                                            parallel_pulse=parallel_rabi, end_laser=False)
+                rabi_element = rabi_element[0]
+                mega_block.extend(rabi_element)
+            # DEER ON P1
+            if add_p1_deer:
+                deer_P1_element, _, _ = self.generate_timedeer_multidrive_truerabi(nv_freq=nv_freq,
+                                                    nv_pfactor=nv_pfactor, nv_rabi_period=nv_rabi_period,
+                                                    p1_frequencies=p1_frequencies, p1_pfactors=p1_pfactors_amplitude,
+                                                    p1_rabi_periods=true_p1_rabi_periods,
+                                                    tau_start=tau_start_p1, tau_step=0,
+                                                    num_of_points=1, he_tau=he_tau_p1,
+                                                    read_phase_degree=read_phases_alt_p1,
+                                                    two_pi_deer=two_pi_deer_p1, alternating=False,
+                                                    end_laser=False if add_nv2_deer else True)
+
+                deer_P1_element = deer_P1_element[0]
+                mega_block.extend(deer_P1_element)
+            # DEER ON NV1 WITH NV2
+            if add_nv2_deer:
+                deer_nv2_element, _, _ = self.generate_timedeer_multidrive_truerabi(nv_freq=nv2_freq,
+                                                    nv_pfactor=nv2_pfactor, nv_rabi_period=nv2_rabi_period,
+                                                    p1_frequencies=nv1_freq, p1_pfactors=nv1_pfactor,
+                                                    p1_rabi_periods=nv1_rabi_period,
+                                                    tau_start=tau_start_nv2, tau_step=0,
+                                                    num_of_points=1, he_tau=he_tau_nv2,
+                                                    read_phase_degree=read_phases_alt_nv2,
+                                                    two_pi_deer=two_pi_deer_nv2,
+                                                    end_laser=True, alternating=False)
+                deer_nv2_element = deer_nv2_element[0]
+                mega_block.extend(deer_nv2_element)
+
+
+        created_blocks.append(mega_block)
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((mega_block.name, num_of_steps - 1))
+
+        # Create and append sync trigger block if needed
+        self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_steps if alternating else num_of_steps
+        number_of_lasers += len(idx_ignored_lasers)
+        self.log.debug(f"Ignoring laser pulses with idx= {idx_ignored_lasers} // Laser number = {number_of_lasers}")
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = idx_ignored_lasers
+        block_ensemble.measurement_information['controlled_variable'] = tau_array
+        block_ensemble.measurement_information['labels'] = ('tau (rabi)', '')
+        block_ensemble.measurement_information['units'] = ('s', '')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+    def generate_ramsey_p1check(self, name='ramsey_p1check', tau_start=1.0e-6, tau_step=1.0e-6, num_of_points=50,
+                                offset = 0, p1_pulse_freq=1e9, p1_pulse_length=1e-6, p1_pfactor = 1,
+                                alternating=True, read_phase_degree='0, 180'):
+        """
+
+        """
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+
+        read_phases = np.fromstring(read_phase_degree, sep=",")
+
+        # get tau array for measurement ticks
+        tau_array = tau_start + np.arange(num_of_points) * tau_step
+
+        # create the elements
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+        pihalf_element = self._get_mw_element(length=self.rabi_period / 4,
+                                              increment=0,
+                                              amp=self.microwave_amplitude,
+                                              freq=self.microwave_frequency + offset,
+                                              phase=0)
+        # Use a 180 deg phase shifted pulse as 3pihalf pulse if microwave channel is analog
+
+        pihalf_read_element = self._get_mw_element(length=self.rabi_period / 4,
+                                               increment=0,
+                                               amp=self.microwave_amplitude,
+                                               freq=self.microwave_frequency + offset,
+                                               phase=read_phases[0])
+
+        pi3half_read_element = self._get_mw_element(length=self.rabi_period / 4,
+                                               increment=0,
+                                               amp=self.microwave_amplitude,
+                                               freq=self.microwave_frequency + offset,
+                                               phase=read_phases[1])
+
+        p1_pulse = self._get_mw_element(length= p1_pulse_length,
+                                       increment=0,
+                                       amp=self.microwave_amplitude/p1_pfactor,
+                                       freq=p1_pulse_freq,
+                                       phase=0)
+
+        tau_element = self._get_idle_element(length=tau_start, increment=tau_step)
+
+        # Create block and append to created_blocks list
+        ramsey_block = PulseBlock(name=name)
+        ramsey_block.append(pihalf_element)
+        ramsey_block.append(p1_pulse)
+        ramsey_block.append(tau_element)
+        ramsey_block.append(pihalf_read_element)
+        ramsey_block.append(laser_element)
+        ramsey_block.append(delay_element)
+        ramsey_block.append(waiting_element)
+        if alternating:
+            ramsey_block.append(pihalf_element)
+            ramsey_block.append(p1_pulse)
+            ramsey_block.append(tau_element)
+            ramsey_block.append(pi3half_read_element)
+            ramsey_block.append(laser_element)
+            ramsey_block.append(delay_element)
+            ramsey_block.append(waiting_element)
+        created_blocks.append(ramsey_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((ramsey_block.name, num_of_points - 1))
+
+        # Create and append sync trigger block if needed
+        self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_points if alternating else num_of_points
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = list()
+        block_ensemble.measurement_information['controlled_variable'] = tau_array
+        block_ensemble.measurement_information['units'] = ('s', '')
+        block_ensemble.measurement_information['labels'] = ('Tau', 'Signal')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        # append ensemble to created ensembles
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+    def entangling_gate(self, name='entangling_gate', gate_order=1,
+                        nv_freq=1290.0e6, nv_pfactor=1, nv_rabi_period=30e-9,
+                        p1_frequencies=0, p1_pfactors=0, p1_rabi_periods=0,
+                        tau1_half=1e-6, tau2_start=5e-9, num_of_steps = 50, step_size = 50e-9,
+                        alternating=False, read_phases_degree='0,180',
+                        add_alt_pi=False, end_laser=True):
+        created_blocks = list()
+        created_ensembles = list()
+        created_sequences = list()
+        if p1_frequencies is 0:
+            p1_frequencies = [2870.0e6]
+        if p1_pfactors is 0:
+            p1_pfactors = [1]
+        if p1_rabi_periods is 0:
+            p1_rabi_periods = [90e-9]
+
+        tau_array = tau2_start + np.arange(num_of_steps) * step_size
+
+        waiting_element = self._get_idle_element(length=self.wait_time,
+                                                 increment=0)
+        laser_element = self._get_laser_gate_element(length=self.laser_length,
+                                                     increment=0)
+        delay_element = self._get_delay_gate_element()
+
+        read_phases = np.fromstring(read_phase_degree, sep=",")
+
+        # create pulses
+        nv_pihalf_element = self._get_mw_element(length=self.rabi_period * nv_pfactor / 4,
+                                                 increment=0,
+                                                 amp=self.microwave_amplitude / nv_pfactor,
+                                                 freq=self.microwave_frequency,
+                                                 phase=0)
+        nv_pix_element = self._get_mw_element(length=self.rabi_period * nv_pfactor / 2,
+                                             increment=0,
+                                             amp=self.microwave_amplitude / nv_pfactor,
+                                             freq=self.microwave_frequency,
+                                             phase=0)
+        nv_piy_element = self._get_mw_element(length=self.rabi_period * nv_pfactor / 2,
+                                              increment=0,
+                                              amp=self.microwave_amplitude / nv_pfactor,
+                                              freq=self.microwave_frequency,
+                                              phase=180)
+        nv_pihalf_read_element = self._get_mw_element(length=self.rabi_period * nv_pfactor / 4,
+                                                      increment=0,
+                                                      amp=self.microwave_amplitude / nv_pfactor,
+                                                      freq=self.microwave_frequency,
+                                                      phase=read_phases[0])
+        nv_pihalf_read2_element = self._get_mw_element(length=self.rabi_period * nv_pfactor / 4,
+                                                       increment=0,
+                                                       amp=self.microwave_amplitude / nv_pfactor,
+                                                       freq=self.microwave_frequency,
+                                                       phase=read_phases[1])
+
+        amps = [self.microwave_amplitude / fac for fac in p1_pfactors]
+        x_phases = [0] * len(amps)
+        y_phases = [180] * len(amps)
+        # length of the multidrive as the average of all the pi lengths
+        p1_pi_length = sum(rabi * pfac / 2 for rabi, pfac in zip(p1_rabi_periods, p1_pfactors)) / len(p1_rabi_periods)
+        p1_pix_pulse = self._get_multiple_mw_element(length=p1_pi_length,
+                                                    increment=0,
+                                                    amps=amps,
+                                                    freqs=p1_frequencies,
+                                                    phases=x_phases)
+
+        p1_piy_pulse = self._get_multiple_mw_element(length=p1_pi_length,
+                                                     increment=0,
+                                                     amps=amps,
+                                                     freqs=p1_frequencies,
+                                                     phases=y_phases)
+
+        # free evolution elements
+        tau1_half_element = self._get_idle_element(length=tau1_half, increment=0)
+        tau2_element = self._get_idle_element(length=tau2_start, increment=tau_step)
+        taudiff_element = self._get_idle_element(length=tau1_half - tau2_start - p1_pi_length, increment=-tau_step)
+
+        # Create block and append to created_blocks list
+        entgate_block = PulseBlock(name=name)
+
+        entgate_block.append(nv_pihalf_element)
+        for n in range(order):
+            # 8 pi pulses with alternating phases modeled on XY8
+            for idx in range(4):
+                entgate_block.append(tau1_half_element)
+                entgate_block.append(nv_pix_element)
+                entgate_block.append(taudiff_element)
+                entgate_block.append(p1_pix_pulse)
+                entgate_block.append(tau2_element)
+
+                entgate_block.append(tau1_half_element)
+                entgate_block.append(nv_piy_element)
+                entgate_block.append(taudiff_element)
+                entgate_block.append(p1_piy_pulse)
+                entgate_block.append(tau2_element)
+
+        entgate_block.append(nv_pihalf_read_element)
+        if end_laser:
+            timedeer_block.append(laser_element)
+            timedeer_block.append(delay_element)
+            timedeer_block.append(waiting_element)
+
+        if alternating:
+            if add_alt_pi:
+                for p1_freq, p1_pfac, p1_period in zip(p1_frequencies, p1_pfactors, p1_rabi_periods):
+                    p1_pi_elements = self._get_mw_element(length=p1_period / 2,
+                                                         increment=0,
+                                                         amp=self.microwave_amplitude / p1_pfac,
+                                                         freq=p1_freq,
+                                                         phase=0)
+                    entgate_block.append(p1_pi_elements)
+
+            entgate_block.append(nv_pihalf_element)
+            for n in range(order):
+                # 8 pi pulses with alternating phases modeled on XY8
+                for idx in range(4):
+                    entgate_block.append(tau1_half_element)
+                    entgate_block.append(nv_pix_element)
+                    entgate_block.append(taudiff_element)
+                    entgate_block.append(p1_pix_pulse)
+                    entgate_block.append(tau2_element)
+
+                    entgate_block.append(tau1_half_element)
+                    entgate_block.append(nv_piy_element)
+                    entgate_block.append(taudiff_element)
+                    entgate_block.append(p1_piy_pulse)
+                    entgate_block.append(tau2_element)
+
+            entgate_block.append(nv_pihalf_read2_element)
+            if end_laser:
+                timedeer_block.append(laser_element)
+                timedeer_block.append(delay_element)
+                timedeer_block.append(waiting_element)
+
+        created_blocks.append(entgate_block)
+
+        # Create block ensemble
+        block_ensemble = PulseBlockEnsemble(name=name, rotating_frame=True)
+        block_ensemble.append((entgate_block.name, num_of_points - 1))
+
+        # Create and append sync trigger block if needed
+        self._add_trigger(created_blocks=created_blocks, block_ensemble=block_ensemble)
+
+        # add metadata to invoke settings later on
+        number_of_lasers = 2 * num_of_points if alternating else num_of_points
+        self.log.debug(f"P1 pi pulse length = {p1_pi_length*10**9:.1f} ns")
+        block_ensemble.measurement_information['alternating'] = alternating
+        block_ensemble.measurement_information['laser_ignore_list'] = list()
+        block_ensemble.measurement_information['controlled_variable'] = tau_array
+        block_ensemble.measurement_information['units'] = ('s', '')
+        block_ensemble.measurement_information['labels'] = ('Tau2', 'Signal')
+        block_ensemble.measurement_information['number_of_lasers'] = number_of_lasers
+        block_ensemble.measurement_information['counting_length'] = self._get_ensemble_count_length(
+            ensemble=block_ensemble, created_blocks=created_blocks)
+
+        # append ensemble to created ensembles
+        created_ensembles.append(block_ensemble)
+        return created_blocks, created_ensembles, created_sequences
+
+
+
 
 
 

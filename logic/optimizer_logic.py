@@ -234,6 +234,8 @@ class OptimizerLogic(GenericLogic):
         self.sigRefocusStarted.emit(tag)
         self._sigDoNextOptimizationStep.emit()
 
+
+
     def stop_refocus(self):
         """Stops refocus."""
         with self.threadlock:

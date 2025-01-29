@@ -35,9 +35,10 @@ setup['gated'] = pulsedmeasurementlogic.fastcounter().gated
 setup['sampling_freq'] = pulsedmasterlogic.pulse_generator_settings['sample_rate']
 setup['bin_width'] = 4.0e-9
 setup['wait_time'] = 1.0e-6
-setup['laser_delay'] = 500e-9  #200e-9  # #p7887: 900e-9 # aom delay, N25 setup3: 510e-9
+setup['laser_delay'] = 590e-9 ##550e-9  #200e-9  # #p7887: 900e-9 # aom delay, N25 setup3: 510e-9
+setup['laser_delay'] = 1200e-9 # 26.6.24: delay seemed to have increased
 setup['laser_safety'] = 200e-9
-setup['laser_safety'] = 550e-9
+setup['laser_safety'] = 500e-9
 setup['laser_t_analysis'] = 330e-9
 
 if setup['gated']:
@@ -139,7 +140,7 @@ def do_experiment(experiment, qm_dict, meas_type, meas_info, generate_new=True, 
     global qm_dict_final
     qm_dict_final = {}
     # add information necessary for measurement type
-    logger.debug("Measrument info of type {}".format(str(meas_info)))
+    logger.debug(f"Do_exp for mes type: {str(meas_type)}, mes info type: {str(meas_info)}")
     qm_dict = meas_info(experiment, qm_dict)
 
     # perform sanity checks
@@ -305,6 +306,8 @@ def lockfile_aquire(filename, timeout_s=0):
 def prepare_qm(experiment, qm_dict, generate_new=True):
     ###### Prepare a quantum measurement by generating the sequence and loading it up to the pulser
 
+    logger.debug(f"Prepare qm, generate_new: {generate_new}")
+
     if generate_new:
         generate_sample_upload(experiment, qm_dict)
     else:
@@ -367,6 +370,7 @@ def generate_sample_upload(experiment, qm_dict):
         # make sure a previous ensemble is deleted
         pulsedmasterlogic.delete_block_ensemble(qm_dict['name'])
         try:
+            logger.debug(f"Generating from qm: {qm_dict}")
             pulsedmasterlogic.generate_predefined_sequence(experiment, qm_dict.copy())
         except Exception as e:
             pulsedmasterlogic.log.error('Generation failed')
@@ -1352,6 +1356,7 @@ def do_automized_measurements(qm_dict, autoexp):
             qm_dict['no_optimize'] = False
         if not qm_dict['no_optimize']:
             optimize_poi(poi_name)
+            laser_off()
 
         # perform all experiments
         for experiment in autoexp:
@@ -1503,6 +1508,8 @@ def do_automized_measurements(qm_dict, autoexp):
                     if opt_poi != poi:
                         logger.info(f"Back to and optimize on poi {poi}")
                         optimize_poi(poi, update_shift=False)
+
+                    laser_off()
             except: pass
         first_poi = False
 

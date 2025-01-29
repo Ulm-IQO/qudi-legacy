@@ -818,16 +818,38 @@ class PoiManagerLogic(GenericLogic):
         return
 
     @QtCore.Slot()
-    def set_scan_image(self, emit_change=True):
+    def set_scan_image(self,  emit_change=True, scan_image=None, scan_extent=None):
         """ Get the current xy scan data and set as scan_image of ROI. """
-        self._roi.set_scan_image(
-            self.scannerlogic().xy_image[:, :, 3],
-            (tuple(self.scannerlogic().image_x_range), tuple(self.scannerlogic().image_y_range)))
+
+        if scan_image is None:
+            scan_image = self.scannerlogic().xy_image[:, :, 3]
+
+        if scan_extent is None:
+            scan_extent = (tuple(self.scannerlogic().image_x_range), tuple(self.scannerlogic().image_y_range))
+
+        #self._roi.set_scan_image(
+        #    self.scannerlogic().xy_image[:, :, 3],
+        #    (tuple(self.scannerlogic().image_x_range), tuple(self.scannerlogic().image_y_range)))
+
+        self._roi.set_scan_image(scan_image, scan_extent)
 
         if emit_change:
             self.sigRoiUpdated.emit({'scan_image': self.roi_scan_image,
                                      'scan_image_extent': self.roi_scan_image_extent})
         return
+
+    def move_scan_image(self, move_xy):
+
+        dx, dy = move_xy[0], move_xy[1]
+
+        new_scan_extent = (tuple((self.roi_scan_image_extent[0][0]+dx, self.roi_scan_image_extent[0][1]+dx)),
+                           tuple((self.roi_scan_image_extent[1][0]+dy, self.roi_scan_image_extent[1][1]+dy)))
+
+        try:
+            self.set_scan_image(emit_change=True, scan_extent=new_scan_extent)
+        except:
+            self.log.exception("Unable to move image: ")
+
 
     @QtCore.Slot()
     def reset_roi(self):
@@ -1097,11 +1119,11 @@ class PoiManagerLogic(GenericLogic):
             filetag = filename.rsplit('_poi_list.dat', 1)[0]
 
         # Read POI data as well as roi metadata from textfile
-        poi_names = np.loadtxt(complete_path, delimiter='\t', usecols=0, dtype=str)
+        poi_names = np.loadtxt(complete_path, delimiter='\t', usecols=0, dtype=str, ndmin=1)
         if is_legacy_format:
-            poi_coords = np.loadtxt(complete_path, delimiter='\t', usecols=(2, 3, 4), dtype=float)
+            poi_coords = np.loadtxt(complete_path, delimiter='\t', usecols=(2, 3, 4), dtype=float, ndmin=2)
         else:
-            poi_coords = np.loadtxt(complete_path, delimiter='\t', usecols=(1, 2, 3), dtype=float)
+            poi_coords = np.loadtxt(complete_path, delimiter='\t', usecols=(1, 2, 3), dtype=float, ndmin=2)
 
         # Create list of POI instances
         poi_list = [PointOfInterest(pos, poi_names[i]) for i, pos in enumerate(poi_coords)]

@@ -837,7 +837,9 @@ class MagnetLogic(GenericLogic):
             return
 
         self._do_premeasurement_proc()
+        self.log.debug('Fetching pos...')
         pos = self._magnet_device.get_pos()
+        self.log.debug('pos {0}'.format(pos))
         end_pos = self._pathway[self._pathway_index]
         self.log.debug('end_pos {0}'.format(end_pos))
         differences = []
@@ -949,6 +951,7 @@ class MagnetLogic(GenericLogic):
         self._magnet_device.move_abs(self._saved_pos_before_align)
 
         while self._check_is_moving():
+            self.log.debug("Waiting for moving")
             time.sleep(self._checktime)
 
         self.sigMeasurementFinished.emit()
@@ -1081,7 +1084,8 @@ class MagnetLogic(GenericLogic):
 
         elif freq < 0:
             self.log.error('No refocus happend, because negative frequency was given')
-
+        else:
+            self.log.debug("Finished without doing anything")
         # If frequency is 0, then no refocus will happen at all, which is intended.
         return
 
@@ -1092,8 +1096,9 @@ class MagnetLogic(GenericLogic):
         self._optimizer_logic.start_refocus(curr_pos, caller_tag='magnet_logic')
 
         # check just the state of the optimizer
-        while self._optimizer_logic.module_state() != 'idle' and not self._stop_measure:
-            time.sleep(0.5)
+        cond_str = "self._optimizer_logic.module_state() == 'idle' or self._stop_measure"
+        self._wait_on_condition(cond_str, 0.5, 30)
+
 
         # use the position to move the scanner
         self._confocal_logic.set_position('magnet_logic',
@@ -1372,8 +1377,8 @@ class MagnetLogic(GenericLogic):
         #       display, which need to be solved.
         diff = (abs(odmr_high_freq_meas - odmr_low_freq_meas) / 2) / self.norm
 
-        while self._odmr_logic.module_state() != 'idle' and not self._stop_measure:
-            time.sleep(0.5)
+        cond_str = "self._odmr_logic.module_state() == 'idle' or self._stop_measure"
+        self._wait_on_condition(cond_str, 0.5, 30)
 
         return diff, store_dict
 
@@ -1682,6 +1687,23 @@ class MagnetLogic(GenericLogic):
             self._odmr_logic.MW_on()
         else:
             self._odmr_logic.MW_off()
+
+    def _wait_on_condition(self, condition_str, dt_s=0.2, timeout_s=-1):
+
+        timed_out = False
+        t = 0
+        t_start = time.perf_counter()
+        while not eval(condition_str):
+
+            t = time.perf_counter() - t_start
+            if timeout_s >= 0 and t > timeout_s:
+                timed_out = True
+                break
+            time.sleep(dt_s)
+            self.log.debug(f"Waiting for {condition_str}")
+
+        if timed_out:
+            self.log.warning(f"Timed out after {t} s waiting for {condition_str}")
 
     def _load_pulsed_odmr(self):
         """ Load a pulsed ODMR asset. """

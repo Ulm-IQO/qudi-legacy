@@ -190,7 +190,7 @@ class BasicPredefinedGenerator(PredefinedGeneratorBase):
         return created_blocks, created_ensembles, created_sequences
 
     def generate_rabi(self, name='rabi', tau_start=10.0e-9, tau_step=10.0e-9,
-                      leave_out_tau_idx='', num_of_points=50, read_pix=0,
+                      leave_out_tau_idx='', num_of_points=50, read_pix=1,
                       alternating=False, add_gate_ch=''):
         """
 
@@ -243,7 +243,7 @@ class BasicPredefinedGenerator(PredefinedGeneratorBase):
         # Create block and append to created_blocks list
         rabi_block = PulseBlock(name=name)
         rabi_block.append(mw_element)
-        rabi_block.append(pi_element)
+        #rabi_block.append(pi_element)
         rabi_block.append(laser_element)
         rabi_block.append(delay_element)
         rabi_block.append(waiting_element)
@@ -251,7 +251,7 @@ class BasicPredefinedGenerator(PredefinedGeneratorBase):
         if alternating:
             rabi_block.append(mw_element)
             rabi_block.append(pi_element)
-            rabi_block.append(pi_element)
+            #rabi_block.append(pi_element)
             rabi_block.append(laser_element)
             rabi_block.append(delay_element)
             rabi_block.append(waiting_element)
@@ -356,14 +356,17 @@ class BasicPredefinedGenerator(PredefinedGeneratorBase):
         created_ensembles.append(block_ensemble)
         return created_blocks, created_ensembles, created_sequences
 
+
     def generate_ramsey(self, name='ramsey', tau_start=1.0e-6, tau_step=1.0e-6, num_of_points=50,
-                        alternating=True):
+                        offset = 0, alternating=True, read_phase_degree='0, 180'):
         """
 
         """
         created_blocks = list()
         created_ensembles = list()
         created_sequences = list()
+
+        read_phases = np.fromstring(read_phase_degree, sep=",")
 
         # get tau array for measurement ticks
         tau_array = tau_start + np.arange(num_of_points) * tau_step
@@ -377,35 +380,36 @@ class BasicPredefinedGenerator(PredefinedGeneratorBase):
         pihalf_element = self._get_mw_element(length=self.rabi_period / 4,
                                               increment=0,
                                               amp=self.microwave_amplitude,
-                                              freq=self.microwave_frequency,
+                                              freq=self.microwave_frequency + offset,
                                               phase=0)
-        # Use a 180 deg phase shiftet pulse as 3pihalf pulse if microwave channel is analog
-        if self.microwave_channel.startswith('a'):
-            pi3half_element = self._get_mw_element(length=self.rabi_period / 4,
-                                                   increment=0,
-                                                   amp=self.microwave_amplitude,
-                                                   freq=self.microwave_frequency,
-                                                   phase=180)
-        else:
-            pi3half_element = self._get_mw_element(length=3 * self.rabi_period / 4,
-                                                   increment=0,
-                                                   amp=self.microwave_amplitude,
-                                                   freq=self.microwave_frequency,
-                                                   phase=0)
+        # Use a 180 deg phase shifted pulse as 3pihalf pulse if microwave channel is analog
+
+        pihalf_read_element = self._get_mw_element(length=self.rabi_period / 4,
+                                               increment=0,
+                                               amp=self.microwave_amplitude,
+                                               freq=self.microwave_frequency + offset,
+                                               phase=read_phases[0])
+
+        pi3half_read_element = self._get_mw_element(length=self.rabi_period / 4,
+                                               increment=0,
+                                               amp=self.microwave_amplitude,
+                                               freq=self.microwave_frequency + offset,
+                                               phase=read_phases[1])
+
         tau_element = self._get_idle_element(length=tau_start, increment=tau_step)
 
         # Create block and append to created_blocks list
         ramsey_block = PulseBlock(name=name)
         ramsey_block.append(pihalf_element)
         ramsey_block.append(tau_element)
-        ramsey_block.append(pihalf_element)
+        ramsey_block.append(pihalf_read_element)
         ramsey_block.append(laser_element)
         ramsey_block.append(delay_element)
         ramsey_block.append(waiting_element)
         if alternating:
             ramsey_block.append(pihalf_element)
             ramsey_block.append(tau_element)
-            ramsey_block.append(pi3half_element)
+            ramsey_block.append(pi3half_read_element)
             ramsey_block.append(laser_element)
             ramsey_block.append(delay_element)
             ramsey_block.append(waiting_element)
@@ -1326,6 +1330,8 @@ class BasicPredefinedGenerator(PredefinedGeneratorBase):
         np.clip(real_tau_array, 0, None, real_tau_array)
         # Convert back to frequency in order to account for clipped values
         freq_array = 1 / (2 * (real_tau_array + self.rabi_period / 2))
+
+        self.log.debug(f"Generating taus: {tau_array}")
 
         # create the elements
         waiting_element = self._get_idle_element(length=self.wait_time, increment=0)
